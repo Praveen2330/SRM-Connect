@@ -1,7 +1,7 @@
 -- First, check if the table exists and if not, create it
 create table if not exists public.profiles (
   id uuid primary key,
-  display_name text unique not null,
+  display_name text,
   bio text,
   interests text[],
   avatar_url text,
@@ -61,37 +61,12 @@ returns trigger
 security definer
 language plpgsql
 as $$
-declare
-  base_display_name text;
-  counter integer := 0;
-  new_display_name text;
 begin
-  -- Get base display name from metadata or email
-  base_display_name := coalesce(new.raw_user_meta_data->>'name', split_part(new.email, '@', 1));
-  
-  -- Try to insert with original name first
-  begin
-    insert into public.profiles (id, display_name)
-    values (new.id, base_display_name);
-    return new;
-  exception when unique_violation then
-    -- If original name is taken, try with incrementing numbers
-    loop
-      counter := counter + 1;
-      new_display_name := base_display_name || counter::text;
-      begin
-        insert into public.profiles (id, display_name)
-        values (new.id, new_display_name);
-        return new;
-      exception when unique_violation then
-        continue;
-      end;
-      exit when counter > 100; -- Prevent infinite loop
-    end loop;
-    
-    -- If we get here, something went wrong
-    raise exception 'Could not generate unique display name after 100 attempts';
-  end;
+  insert into public.profiles (id, display_name)
+  values (new.id, coalesce(new.raw_user_meta_data->>'name', split_part(new.email, '@', 1)))
+  on conflict (id) do update
+  set display_name = EXCLUDED.display_name;
+  return new;
 end;
 $$;
 
@@ -103,4 +78,5 @@ create trigger on_auth_user_created
 
 -- Grant necessary permissions
 grant usage on schema public to anon, authenticated;
-grant all on public.profiles to anon, authenticated; 
+grant all on public.profiles to anon, authenticated;
+grant usage on sequence public.profiles_id_seq to anon, authenticated; 

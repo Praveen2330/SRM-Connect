@@ -106,8 +106,10 @@ export default function Messages() {
         }
 
         // Initialize new socket connection
-        console.log('Initializing new socket connection');
-        socketRef.current = io(import.meta.env.VITE_SERVER_URL || 'http://localhost:3000', {
+        const backendUrl = import.meta.env.VITE_BACKEND_URL || 'http://localhost:3000';
+        console.log('Initializing new socket connection to:', backendUrl);
+        
+        socketRef.current = io(backendUrl, {
           auth: {
             token: session.access_token
           },

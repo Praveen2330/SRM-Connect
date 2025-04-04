@@ -4,11 +4,6 @@ import { resolve } from 'path';
 
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), '');
-  
-  // For debugging
-  console.log('Build mode:', mode);
-  console.log('Environment variables:', Object.keys(env).filter(key => key.startsWith('VITE_')));
-  
   return {
     plugins: [react()],
     base: '/',
@@ -24,7 +19,7 @@ export default defineConfig(({ mode }) => {
       }
     },
     define: {
-      'process.env': {},
+      'process.env': env,
       global: 'globalThis',
     },
     optimizeDeps: {
@@ -36,9 +31,6 @@ export default defineConfig(({ mode }) => {
       }
     },
     build: {
-      outDir: 'dist',
-      assetsDir: 'assets',
-      emptyOutDir: true,
       rollupOptions: {
         output: {
           manualChunks: {
@@ -47,17 +39,10 @@ export default defineConfig(({ mode }) => {
         },
       },
       sourcemap: true,
-      minify: 'terser',
-      terserOptions: {
-        compress: {
-          drop_console: false, // Keep console.logs for debugging
-        },
-      },
     },
     server: {
       host: true,
       port: 3000,
-      cors: true,
     },
   }
 });
