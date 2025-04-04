@@ -61,7 +61,7 @@ export default function VideoChat() {
         setConnectionStatus('Connecting to server...');
         
         // Initialize socket connection with proper configuration
-        socketRef.current = io('http://localhost:3000', {
+        socketRef.current = io(import.meta.env.VITE_SERVER_URL || 'http://localhost:3000', {
           auth: {
             token: session.access_token
           },

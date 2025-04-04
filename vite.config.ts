@@ -21,6 +21,9 @@ export default defineConfig(({ mode }) => {
     define: {
       'process.env': env,
       global: 'globalThis',
+      // Explicitly define Supabase environment variables
+      'import.meta.env.VITE_SUPABASE_URL': JSON.stringify(process.env.VITE_SUPABASE_URL),
+      'import.meta.env.VITE_SUPABASE_ANON_KEY': JSON.stringify(process.env.VITE_SUPABASE_ANON_KEY),
     },
     optimizeDeps: {
       exclude: ['lucide-react'],
@@ -39,10 +42,18 @@ export default defineConfig(({ mode }) => {
         },
       },
       sourcemap: true,
+      // Add minification options
+      minify: 'terser',
+      terserOptions: {
+        compress: {
+          drop_console: false, // Keep console.logs for debugging
+        },
+      },
     },
     server: {
       host: true,
       port: 3000,
+      cors: true, // Enable CORS for development
     },
   }
 });

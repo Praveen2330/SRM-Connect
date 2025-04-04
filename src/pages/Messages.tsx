@@ -107,7 +107,7 @@ export default function Messages() {
 
         // Initialize new socket connection
         console.log('Initializing new socket connection');
-        socketRef.current = io('http://localhost:3000', {
+        socketRef.current = io(import.meta.env.VITE_SERVER_URL || 'http://localhost:3000', {
           auth: {
             token: session.access_token
           },
