@@ -78,5 +78,4 @@ create trigger on_auth_user_created
 
 -- Grant necessary permissions
 grant usage on schema public to anon, authenticated;
-grant all on public.profiles to anon, authenticated;
-grant usage on sequence public.profiles_id_seq to anon, authenticated; 
+grant all on public.profiles to anon, authenticated; 
