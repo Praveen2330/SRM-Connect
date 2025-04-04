@@ -18,15 +18,29 @@ function Login() {
     setError(null);
 
     try {
-      const { error } = await supabase.auth.signInWithPassword({
+      const { data, error } = await supabase.auth.signInWithPassword({
         email,
         password
       });
 
       if (error) throw error;
-      navigate('/dashboard');
+      if (data?.user) {
+        // Fetch user profile
+        const { data: profile, error: profileError } = await supabase
+          .from('profiles')
+          .select('*')
+          .eq('id', data.user.id)
+          .single();
+
+        if (profileError) {
+          console.error('Error fetching profile:', profileError);
+        }
+
+        navigate('/dashboard');
+      }
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'An error occurred');
+      console.error('Login error:', err);
+      setError(err instanceof Error ? err.message : 'An error occurred during login');
     } finally {
       setLoading(false);
     }
@@ -37,28 +51,46 @@ function Login() {
     setLoading(true);
     setError(null);
 
-    if (!displayName && isSignUp) {
+    if (!displayName) {
       setError('Please enter a display name');
       setLoading(false);
       return;
     }
 
+    if (!email.endsWith('@srmist.edu.in')) {
+      setError('Please use your SRM email address (@srmist.edu.in)');
+      setLoading(false);
+      return;
+    }
+
     try {
-      const { error } = await supabase.auth.signUp({
+      const { data, error } = await supabase.auth.signUp({
         email,
         password,
         options: {
           data: {
             name: displayName
-          },
-          emailRedirectTo: `${window.location.origin}/dashboard`
+          }
         }
       });
 
       if (error) throw error;
-      setError('Check your email for the confirmation link');
+
+      if (data?.user) {
+        setError('Success! Please check your email for the confirmation link.');
+        setIsSignUp(false); // Switch back to login view
+      }
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'An error occurred');
+      console.error('Signup error:', err);
+      if (err instanceof Error) {
+        if (err.message.includes('database')) {
+          setError('Unable to create profile. Please try again or contact support.');
+        } else {
+          setError(err.message);
+        }
+      } else {
+        setError('An error occurred during signup');
+      }
     } finally {
       setLoading(false);
     }
@@ -71,7 +103,11 @@ function Login() {
           {isSignUp ? 'Create Account' : 'Welcome Back'}
         </h2>
         {error && (
-          <div className="bg-red-500/10 border border-red-500 text-red-500 rounded-lg p-3 mb-6">
+          <div className={`border rounded-lg p-3 mb-6 ${
+            error.startsWith('Success!') 
+              ? 'bg-green-500/10 border-green-500 text-green-500'
+              : 'bg-red-500/10 border-red-500 text-red-500'
+          }`}>
             {error}
           </div>
         )}
@@ -128,6 +164,7 @@ function Login() {
                 onChange={(e) => setPassword(e.target.value)}
                 className="w-full bg-black border border-zinc-700 rounded-lg py-2 pl-10 pr-4 focus:outline-none focus:border-white"
                 required
+                minLength={6}
                 disabled={loading}
               />
             </div>
@@ -142,7 +179,10 @@ function Login() {
             </button>
             <button
               type="button"
-              onClick={() => setIsSignUp(!isSignUp)}
+              onClick={() => {
+                setIsSignUp(!isSignUp);
+                setError(null);
+              }}
               className="w-full bg-transparent border border-white text-white py-2 rounded-lg font-semibold hover:bg-white/10 transition-colors disabled:opacity-50"
               disabled={loading}
             >
