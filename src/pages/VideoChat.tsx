@@ -58,11 +58,21 @@ export default function VideoChat() {
         }
 
         console.log('Initializing socket connection...');
+        console.log('Auth token available:', !!session.access_token);
         setConnectionStatus('Connecting to server...');
         
         // Initialize socket connection with proper configuration
         const backendUrl = import.meta.env.VITE_BACKEND_URL || 'http://localhost:3000';
         console.log('Connecting to backend at:', backendUrl);
+        
+        // Ping the server first to wake it up if it's sleeping
+        try {
+          console.log('Pinging server to wake it up...');
+          const pingResponse = await fetch(`${backendUrl}/health`);
+          console.log('Server ping response:', pingResponse.status);
+        } catch (pingError) {
+          console.warn('Ping failed, server might be starting up:', pingError);
+        }
         
         socketRef.current = io(backendUrl, {
           auth: {
@@ -85,6 +95,7 @@ export default function VideoChat() {
 
         socketRef.current.on('connect_error', (err) => {
           console.error('Connection error:', err);
+          console.error('Connection error details:', err.message);
           setIsConnected(false);
           setConnectionStatus('Failed to connect to server');
           setError('Failed to connect to server. Please try again.');
@@ -114,10 +125,19 @@ export default function VideoChat() {
     };
 
     initializeSocket();
+    
+    // Set up a ping interval to keep the server awake
+    const pingInterval = setInterval(() => {
+      if (socketRef.current?.connected) {
+        console.log('Sending keep-alive ping');
+        socketRef.current.emit('ping');
+      }
+    }, 60000); // ping every minute
 
     // Cleanup function
     return () => {
       console.log('Cleaning up VideoChat component...');
+      clearInterval(pingInterval);
       stopAllMediaTracks();
       socketRef.current?.disconnect();
       peerRef.current?.destroy();
@@ -298,8 +318,11 @@ export default function VideoChat() {
       peerRef.current = undefined;
     }
     
+    console.log('Emitting findMatch event to server...');
     socketRef.current?.emit('findMatch');
 
+    // Log event listeners
+    console.log('Setting up matchFound listener...');
     socketRef.current?.once('matchFound', ({ roomId }) => {
       console.log('Match found! Room ID:', roomId);
       setIsMatching(false);
@@ -467,10 +490,13 @@ export default function VideoChat() {
     };
 
     setMessages(prev => [...prev, message]);
+    
+    // Use the correct partner ID instead of channelName
     socketRef.current.emit('chatMessage', {
-      to: peerRef.current?.channelName,
+      to: currentPartnerId,
       content: newMessage
     });
+    
     setNewMessage('');
 
     // Scroll to bottom of chat
@@ -483,8 +509,10 @@ export default function VideoChat() {
     if (!hasLiked && socketRef.current) {
       setLikes(prev => prev + 1);
       setHasLiked(true);
+      
+      // Use the correct partner ID instead of channelName
       socketRef.current.emit('like', {
-        to: peerRef.current?.channelName
+        to: currentPartnerId
       });
     }
   };

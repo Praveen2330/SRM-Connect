@@ -108,6 +108,16 @@ export default function Messages() {
         // Initialize new socket connection
         const backendUrl = import.meta.env.VITE_BACKEND_URL || 'http://localhost:3000';
         console.log('Initializing new socket connection to:', backendUrl);
+        console.log('Auth token available:', !!session.access_token);
+        
+        // Ping the server first to wake it up if it's sleeping
+        try {
+          console.log('Pinging server to wake it up...');
+          const pingResponse = await fetch(`${backendUrl}/health`);
+          console.log('Server ping response:', pingResponse.status);
+        } catch (pingError) {
+          console.warn('Ping failed, server might be starting up:', pingError);
+        }
         
         socketRef.current = io(backendUrl, {
           auth: {
@@ -132,6 +142,7 @@ export default function Messages() {
 
         socketRef.current.on('connect_error', (error) => {
           console.error('Socket connection error:', error);
+          console.error('Socket connection error details:', error.message);
           setConnectionStatus('error');
           toast.error('Failed to connect to chat server. Retrying...');
         });
@@ -199,6 +210,24 @@ export default function Messages() {
     };
 
     setupSocket();
+    
+    // Set up a ping interval to keep the server awake
+    const pingInterval = setInterval(() => {
+      if (socketRef.current?.connected) {
+        console.log('Sending keep-alive ping');
+        socketRef.current.emit('ping');
+      } else {
+        console.log('Socket not connected, skipping ping');
+      }
+    }, 60000); // ping every minute
+    
+    return () => {
+      clearInterval(pingInterval);
+      if (socketRef.current) {
+        console.log('Cleaning up socket connection on unmount');
+        socketRef.current.disconnect();
+      }
+    };
   }, [currentUser?.id]);
 
   // Fetch conversations on mount
@@ -258,7 +287,7 @@ export default function Messages() {
     }
   };
 
-  // Update message sending to include auth check and optimistic update
+  // Update message sending to include better logging
   const sendMessage = async () => {
     try {
       const { data: { session } } = await supabase.auth.getSession();
@@ -270,6 +299,11 @@ export default function Messages() {
       }
 
       if (!socketRef.current || !currentChat || !newMessage.trim()) {
+        console.error('Cannot send message:', { 
+          socketConnected: !!socketRef.current,
+          currentChat,
+          hasMessageContent: !!newMessage.trim() 
+        });
         return;
       }
 
@@ -300,6 +334,7 @@ export default function Messages() {
       });
 
       // Emit the message
+      console.log('Emitting message event to server...');
       socketRef.current.emit('message', {
         content: newMessage.trim(),
         type: 'text',
