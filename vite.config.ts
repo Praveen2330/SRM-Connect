@@ -4,6 +4,11 @@ import { resolve } from 'path';
 
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), '');
+  
+  // For debugging
+  console.log('Build mode:', mode);
+  console.log('Environment variables:', Object.keys(env).filter(key => key.startsWith('VITE_')));
+  
   return {
     plugins: [react()],
     base: '/',
@@ -19,11 +24,8 @@ export default defineConfig(({ mode }) => {
       }
     },
     define: {
-      'process.env': env,
+      'process.env': {},
       global: 'globalThis',
-      // Explicitly define Supabase environment variables
-      'import.meta.env.VITE_SUPABASE_URL': JSON.stringify(process.env.VITE_SUPABASE_URL),
-      'import.meta.env.VITE_SUPABASE_ANON_KEY': JSON.stringify(process.env.VITE_SUPABASE_ANON_KEY),
     },
     optimizeDeps: {
       exclude: ['lucide-react'],
@@ -34,6 +36,9 @@ export default defineConfig(({ mode }) => {
       }
     },
     build: {
+      outDir: 'dist',
+      assetsDir: 'assets',
+      emptyOutDir: true,
       rollupOptions: {
         output: {
           manualChunks: {
@@ -42,7 +47,6 @@ export default defineConfig(({ mode }) => {
         },
       },
       sourcemap: true,
-      // Add minification options
       minify: 'terser',
       terserOptions: {
         compress: {
@@ -53,7 +57,7 @@ export default defineConfig(({ mode }) => {
     server: {
       host: true,
       port: 3000,
-      cors: true, // Enable CORS for development
+      cors: true,
     },
   }
 });
