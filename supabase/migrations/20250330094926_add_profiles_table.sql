@@ -1,3 +1,8 @@
+-- Drop existing policies if they exist
+drop policy if exists "Public profiles are viewable by everyone" on public.profiles;
+drop policy if exists "Users can insert their own profile" on public.profiles;
+drop policy if exists "Users can update their own profile" on public.profiles;
+
 -- Create a table for user profiles
 create table if not exists public.profiles (
   id uuid references auth.users on delete cascade primary key,
@@ -27,6 +32,10 @@ create policy "Users can update their own profile"
   on public.profiles for update
   using (auth.uid() = id);
 
+-- Drop existing trigger and function if they exist
+drop trigger if exists on_auth_user_created on auth.users;
+drop function if exists public.handle_new_user();
+
 -- Create a trigger to create a profile entry when a new user signs up
 create or replace function public.handle_new_user()
 returns trigger as $$
@@ -38,6 +47,6 @@ end;
 $$ language plpgsql security definer;
 
 -- Set up the trigger
-create or replace trigger on_auth_user_created
+create trigger on_auth_user_created
   after insert on auth.users
   for each row execute procedure public.handle_new_user(); 
