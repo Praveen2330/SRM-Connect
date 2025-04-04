@@ -4,6 +4,7 @@ import { resolve } from 'path';
 
 export default defineConfig({
   plugins: [react()],
+  base: '/',
   resolve: {
     alias: {
       // Polyfills for Node.js built-ins
@@ -26,5 +27,19 @@ export default defineConfig({
         global: 'globalThis'
       }
     }
-  }
+  },
+  build: {
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          vendor: ['react', 'react-dom', 'react-router-dom'],
+        },
+      },
+    },
+    sourcemap: true,
+  },
+  server: {
+    host: true,
+    port: 3000,
+  },
 });

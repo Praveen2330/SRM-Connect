@@ -5,9 +5,10 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "vite build",
-    "lint": "eslint .",
+    "build": "tsc && vite build",
     "preview": "vite preview",
+    "lint": "eslint .",
+    "vercel-build": "npm run build",
     "server": "node src/server/index.js"
   },
   "dependencies": {
