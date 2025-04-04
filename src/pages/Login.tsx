@@ -95,6 +95,19 @@ function Login() {
     }
 
     try {
+      // First check if user already exists
+      const { data: existingUser } = await supabase
+        .from('profiles')
+        .select('id')
+        .eq('display_name', displayName)
+        .single();
+
+      if (existingUser) {
+        setError('This display name is already taken. Please choose another one.');
+        setLoading(false);
+        return;
+      }
+
       // Create the user
       const { data, error: signUpError } = await supabase.auth.signUp({
         email,
@@ -109,23 +122,11 @@ function Login() {
       if (signUpError) throw signUpError;
 
       if (data?.user) {
-        // Create initial profile
-        const { error: profileError } = await supabase
-          .from('profiles')
-          .insert([
-            {
-              id: data.user.id,
-              display_name: displayName,
-            }
-          ]);
-
-        if (profileError) {
-          console.error('Error creating profile:', profileError);
-          throw new Error('Failed to create user profile');
-        }
-
         toast.success('Account created successfully! Please check your email for verification.');
         setIsSignUp(false); // Switch back to login view
+        setEmail('');
+        setPassword('');
+        setDisplayName('');
       }
     } catch (err) {
       console.error('Signup error:', err);
@@ -133,7 +134,7 @@ function Login() {
         if (err.message.includes('User already registered')) {
           setError('An account with this email already exists. Please sign in.');
         } else if (err.message.includes('database')) {
-          setError('Unable to create profile. Please try again or contact support.');
+          setError('Unable to create account. Please try again or contact support.');
         } else {
           setError(err.message);
         }

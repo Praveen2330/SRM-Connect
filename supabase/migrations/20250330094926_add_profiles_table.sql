@@ -19,6 +19,7 @@ create table if not exists public.profiles (
 drop policy if exists "Public profiles are viewable by everyone" on public.profiles;
 drop policy if exists "Users can insert their own profile" on public.profiles;
 drop policy if exists "Users can update their own profile" on public.profiles;
+drop policy if exists "Enable insert for authenticated users only" on public.profiles;
 
 -- Enable RLS
 alter table public.profiles enable row level security;
@@ -28,11 +29,11 @@ create policy "Public profiles are viewable by everyone"
   on public.profiles for select
   using (true);
 
-create policy "Users can insert their own profile"
+create policy "Enable insert for authenticated users only"
   on public.profiles for insert
-  with check (auth.uid() = id);
+  with check (auth.role() = 'authenticated');
 
-create policy "Users can update their own profile"
+create policy "Enable update for users based on id"
   on public.profiles for update
   using (auth.uid() = id);
 
@@ -57,14 +58,14 @@ create trigger on_profile_updated
 -- Function to handle new user creation
 create or replace function public.handle_new_user()
 returns trigger
-language plpgsql
 security definer
+language plpgsql
 as $$
 begin
   insert into public.profiles (id, display_name)
-  values (new.id, coalesce(new.raw_user_meta_data->>'name', new.email))
+  values (new.id, coalesce(new.raw_user_meta_data->>'name', split_part(new.email, '@', 1)))
   on conflict (id) do update
-  set display_name = coalesce(excluded.display_name, profiles.display_name);
+  set display_name = EXCLUDED.display_name;
   return new;
 end;
 $$;
@@ -73,4 +74,9 @@ $$;
 drop trigger if exists on_auth_user_created on auth.users;
 create trigger on_auth_user_created
   after insert on auth.users
-  for each row execute procedure public.handle_new_user(); 
+  for each row execute procedure public.handle_new_user();
+
+-- Grant necessary permissions
+grant usage on schema public to anon, authenticated;
+grant all on public.profiles to anon, authenticated;
+grant usage on sequence public.profiles_id_seq to anon, authenticated; 
