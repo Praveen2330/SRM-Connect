@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
 import { Mail, Lock, User } from 'lucide-react';
+import toast from 'react-hot-toast';
 
 function Login() {
   const [email, setEmail] = useState('');
@@ -18,29 +19,53 @@ function Login() {
     setError(null);
 
     try {
-      const { data, error } = await supabase.auth.signInWithPassword({
+      // Sign in the user
+      const { data: authData, error: signInError } = await supabase.auth.signInWithPassword({
         email,
         password
       });
 
-      if (error) throw error;
-      if (data?.user) {
+      if (signInError) throw signInError;
+
+      if (authData?.user) {
         // Fetch user profile
         const { data: profile, error: profileError } = await supabase
           .from('profiles')
           .select('*')
-          .eq('id', data.user.id)
+          .eq('id', authData.user.id)
           .single();
 
         if (profileError) {
           console.error('Error fetching profile:', profileError);
+          // Create profile if it doesn't exist
+          const { error: createProfileError } = await supabase
+            .from('profiles')
+            .insert([
+              {
+                id: authData.user.id,
+                display_name: email.split('@')[0],
+              }
+            ]);
+
+          if (createProfileError) {
+            console.error('Error creating profile:', createProfileError);
+          }
         }
 
+        toast.success('Successfully logged in!');
         navigate('/dashboard');
       }
     } catch (err) {
       console.error('Login error:', err);
-      setError(err instanceof Error ? err.message : 'An error occurred during login');
+      if (err instanceof Error) {
+        if (err.message.includes('Invalid login credentials')) {
+          setError('Invalid email or password. Please try again.');
+        } else {
+          setError(err.message);
+        }
+      } else {
+        setError('An error occurred during login. Please try again.');
+      }
     } finally {
       setLoading(false);
     }
@@ -63,8 +88,15 @@ function Login() {
       return;
     }
 
+    if (password.length < 6) {
+      setError('Password must be at least 6 characters long');
+      setLoading(false);
+      return;
+    }
+
     try {
-      const { data, error } = await supabase.auth.signUp({
+      // Create the user
+      const { data, error: signUpError } = await supabase.auth.signUp({
         email,
         password,
         options: {
@@ -74,22 +106,39 @@ function Login() {
         }
       });
 
-      if (error) throw error;
+      if (signUpError) throw signUpError;
 
       if (data?.user) {
-        setError('Success! Please check your email for the confirmation link.');
+        // Create initial profile
+        const { error: profileError } = await supabase
+          .from('profiles')
+          .insert([
+            {
+              id: data.user.id,
+              display_name: displayName,
+            }
+          ]);
+
+        if (profileError) {
+          console.error('Error creating profile:', profileError);
+          throw new Error('Failed to create user profile');
+        }
+
+        toast.success('Account created successfully! Please check your email for verification.');
         setIsSignUp(false); // Switch back to login view
       }
     } catch (err) {
       console.error('Signup error:', err);
       if (err instanceof Error) {
-        if (err.message.includes('database')) {
+        if (err.message.includes('User already registered')) {
+          setError('An account with this email already exists. Please sign in.');
+        } else if (err.message.includes('database')) {
           setError('Unable to create profile. Please try again or contact support.');
         } else {
           setError(err.message);
         }
       } else {
-        setError('An error occurred during signup');
+        setError('An error occurred during signup. Please try again.');
       }
     } finally {
       setLoading(false);
@@ -168,6 +217,11 @@ function Login() {
                 disabled={loading}
               />
             </div>
+            {isSignUp && (
+              <p className="text-sm text-gray-400 mt-1">
+                Password must be at least 6 characters long
+              </p>
+            )}
           </div>
           <div className="flex flex-col gap-3">
             <button
@@ -182,6 +236,9 @@ function Login() {
               onClick={() => {
                 setIsSignUp(!isSignUp);
                 setError(null);
+                setEmail('');
+                setPassword('');
+                setDisplayName('');
               }}
               className="w-full bg-transparent border border-white text-white py-2 rounded-lg font-semibold hover:bg-white/10 transition-colors disabled:opacity-50"
               disabled={loading}

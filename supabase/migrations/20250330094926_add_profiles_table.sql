@@ -1,11 +1,6 @@
--- Drop existing policies if they exist
-drop policy if exists "Public profiles are viewable by everyone" on public.profiles;
-drop policy if exists "Users can insert their own profile" on public.profiles;
-drop policy if exists "Users can update their own profile" on public.profiles;
-
--- Create a table for user profiles
+-- First, check if the table exists and if not, create it
 create table if not exists public.profiles (
-  id uuid references auth.users on delete cascade primary key,
+  id uuid primary key,
   display_name text,
   bio text,
   interests text[],
@@ -13,13 +8,22 @@ create table if not exists public.profiles (
   is_online boolean default false,
   last_seen timestamp with time zone default timezone('utc'::text, now()),
   created_at timestamp with time zone default timezone('utc'::text, now()),
-  updated_at timestamp with time zone default timezone('utc'::text, now())
+  updated_at timestamp with time zone default timezone('utc'::text, now()),
+  constraint fk_user
+    foreign key (id)
+    references auth.users (id)
+    on delete cascade
 );
 
--- Enable Row Level Security
+-- Drop existing policies
+drop policy if exists "Public profiles are viewable by everyone" on public.profiles;
+drop policy if exists "Users can insert their own profile" on public.profiles;
+drop policy if exists "Users can update their own profile" on public.profiles;
+
+-- Enable RLS
 alter table public.profiles enable row level security;
 
--- Create policies
+-- Create policies with better permissions
 create policy "Public profiles are viewable by everyone"
   on public.profiles for select
   using (true);
@@ -32,21 +36,41 @@ create policy "Users can update their own profile"
   on public.profiles for update
   using (auth.uid() = id);
 
--- Drop existing trigger and function if they exist
-drop trigger if exists on_auth_user_created on auth.users;
-drop function if exists public.handle_new_user();
-
--- Create a trigger to create a profile entry when a new user signs up
-create or replace function public.handle_new_user()
-returns trigger as $$
+-- Function to handle profile updates
+create or replace function public.handle_updated_at()
+returns trigger
+language plpgsql
+security definer
+as $$
 begin
-  insert into public.profiles (id, display_name)
-  values (new.id, new.raw_user_meta_data->>'name');
+  new.updated_at = now();
   return new;
 end;
-$$ language plpgsql security definer;
+$$;
 
--- Set up the trigger
+-- Trigger for updating timestamps
+drop trigger if exists on_profile_updated on public.profiles;
+create trigger on_profile_updated
+  before update on public.profiles
+  for each row execute procedure public.handle_updated_at();
+
+-- Function to handle new user creation
+create or replace function public.handle_new_user()
+returns trigger
+language plpgsql
+security definer
+as $$
+begin
+  insert into public.profiles (id, display_name)
+  values (new.id, coalesce(new.raw_user_meta_data->>'name', new.email))
+  on conflict (id) do update
+  set display_name = coalesce(excluded.display_name, profiles.display_name);
+  return new;
+end;
+$$;
+
+-- Trigger for new user creation
+drop trigger if exists on_auth_user_created on auth.users;
 create trigger on_auth_user_created
   after insert on auth.users
   for each row execute procedure public.handle_new_user(); 
