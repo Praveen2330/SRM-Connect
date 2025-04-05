@@ -337,8 +337,9 @@ io.on('connection', (socket) => {
 
   // Handle WebRTC signaling
   socket.on('signal', async ({ to, signal, roomId }) => {
+    const userId = socket.user.id; // Get the correct user ID from socket
     console.log('Received signal:', {
-      from: socket.userId,
+      from: userId,
       to,
       roomId,
       signalType: signal.type
@@ -352,10 +353,11 @@ io.on('connection', (socket) => {
       return;
     }
 
-    if (!room.user1 === socket.userId || !room.user2 === to) {
+    // Fix the room verification logic
+    if (room.user1 !== userId && room.user2 !== userId) {
       console.error('Unauthorized signal attempt:', {
         room: room,
-        from: socket.userId,
+        from: userId,
         to
       });
       socket.emit('error', { message: 'Unauthorized' });
@@ -363,7 +365,8 @@ io.on('connection', (socket) => {
     }
 
     // Get target socket
-    const targetSocket = io.sockets.sockets.get(activeUsers.get(to));
+    const targetSocketId = activeUsers.get(to);
+    const targetSocket = io.sockets.sockets.get(targetSocketId);
     if (!targetSocket) {
       console.error('Target user not found:', to);
       socket.emit('error', { message: 'User disconnected' });
@@ -386,9 +389,9 @@ io.on('connection', (socket) => {
       return;
     }
 
-    console.log('Forwarding signal to:', to);
+    console.log('Forwarding signal to:', to, 'from:', userId);
     targetSocket.emit('signal', {
-      from: socket.userId,
+      from: userId, // Make sure we're sending the correct user ID
       signal,
       roomId
     });

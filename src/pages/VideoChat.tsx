@@ -49,58 +49,39 @@ export default function VideoChat() {
   const peerConnectionRef = useRef<Peer.Instance | null>(null);
 
   // Initialize media function with retries
-  const initializeMedia = async () => {
-    const maxRetries = 3;
-    let lastError;
+  const initializeMedia = async (retryCount = 0) => {
+    try {
+      console.log('Requesting media permissions...');
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: true,
+        audio: true
+      });
+      
+      console.log('Media stream obtained:', {
+        audioTracks: stream.getAudioTracks().length,
+        videoTracks: stream.getVideoTracks().length
+      });
 
-    for (let attempt = 1; attempt <= maxRetries; attempt++) {
-      try {
-        console.log(`Requesting media permissions (attempt ${attempt}/${maxRetries})...`);
-        const stream = await navigator.mediaDevices.getUserMedia({
-          video: {
-            width: { ideal: 1280 },
-            height: { ideal: 720 },
-            facingMode: 'user'
-          },
-          audio: {
-            echoCancellation: true,
-            noiseSuppression: true
-          }
-        });
-
-        console.log('Media permissions granted, checking stream...', {
-          audioTracks: stream.getAudioTracks().length,
-          videoTracks: stream.getVideoTracks().length
-        });
-
-        // Verify we have both audio and video tracks
-        if (!stream.getAudioTracks().length || !stream.getVideoTracks().length) {
-          throw new Error('Stream is missing audio or video tracks');
-        }
-
-        // Set up the stream
-        if (localVideoRef.current) {
-          localVideoRef.current.srcObject = stream;
-        }
-        setLocalStream(stream);
-        setError('');
-        
-        console.log('Media initialization successful');
-        return stream;
-      } catch (error) {
-        console.error(`Media initialization attempt ${attempt} failed:`, error);
-        lastError = error;
-        
-        // Wait before retrying
-        if (attempt < maxRetries) {
-          await new Promise(resolve => setTimeout(resolve, 1000));
-        }
+      setLocalStream(stream);
+      if (localVideoRef.current) {
+        localVideoRef.current.srcObject = stream;
+        await localVideoRef.current.play();
+        console.log('Local video playing');
       }
-    }
 
-    console.error('All media initialization attempts failed');
-    setError('Failed to access camera and microphone. Please check permissions.');
-    throw lastError;
+      return stream;
+    } catch (error) {
+      console.error('Media initialization error:', error);
+      setError('Failed to access camera/microphone. Please check permissions.');
+      
+      if (retryCount < 3) {
+        console.log(`Retrying media initialization (attempt ${retryCount + 1}/3)...`);
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        return initializeMedia(retryCount + 1);
+      }
+      
+      throw error;
+    }
   };
 
   useEffect(() => {
@@ -316,181 +297,7 @@ export default function VideoChat() {
         socketRef.current = socket;
 
         // Handle match found event
-        socket.on('matchFound', ({ roomId, partnerId, isInitiator }) => {
-          console.log('Match found:', { roomId, partnerId, isInitiator });
-          setCurrentPartnerId(partnerId);
-          setIsMatched(true);
-          setIsSearching(false);
-          setConnectionStatus('Match found! Establishing connection...');
-
-          // Initialize WebRTC connection
-          const peer = new Peer({
-            initiator: isInitiator,
-            trickle: true,
-            stream: localStream,
-            config: {
-              iceTransportPolicy: 'all',
-              bundlePolicy: 'max-bundle',
-              rtcpMuxPolicy: 'require',
-              iceServers: [
-                { urls: 'stun:stun.l.google.com:19302' },
-                { urls: 'stun:stun1.l.google.com:19302' },
-                { 
-                  urls: [
-                    'turn:openrelay.metered.ca:80',
-                    'turn:openrelay.metered.ca:443',
-                    'turn:openrelay.metered.ca:443?transport=tcp'
-                  ],
-                  username: 'openrelayproject',
-                  credential: 'openrelayproject',
-                }
-              ]
-            }
-          });
-
-          // Debug peer instance
-          console.log('Peer instance created:', {
-            initiator: isInitiator,
-            hasStream: !!localStream,
-            streamTracks: localStream ? {
-              audio: localStream.getAudioTracks().length,
-              video: localStream.getVideoTracks().length
-            } : null,
-            peerConfig: peer._config
-          });
-
-          // Set call start time when peer connects
-          peer.on('connect', () => {
-            console.log('Peer connection established');
-            setConnectionStatus('Connected to partner');
-            setCallStartTime(new Date());
-            setError('');
-          });
-
-          // Handle peer signals with better error handling
-          peer.on('signal', (signal) => {
-            console.log('Generated signal:', {
-              type: signal.type,
-              signalData: signal
-            });
-
-            if (!socketRef.current) {
-              console.error('Socket not available when trying to send signal');
-              setError('Connection error: Socket not available');
-              return;
-            }
-
-            try {
-              socketRef.current.emit('signal', {
-                to: partnerId,
-                signal,
-                roomId
-              });
-            } catch (error) {
-              console.error('Error sending signal:', error);
-              setError('Failed to send connection signal');
-            }
-          });
-
-          // Handle incoming signals with validation
-          socket.on('signal', ({ from, signal, roomId: incomingRoomId }) => {
-            console.log('Received signal:', { 
-              from, 
-              type: signal.type,
-              roomId: incomingRoomId,
-              signalData: signal
-            });
-
-            if (from === partnerId && incomingRoomId === roomId) {
-              try {
-                if (!signal) {
-                  throw new Error('Received empty signal');
-                }
-                peer.signal(signal);
-                console.log('Successfully applied signal');
-              } catch (error) {
-                console.error('Error applying signal:', error);
-                setError('Failed to establish peer connection. Please try again.');
-              }
-            } else {
-              console.warn('Received signal from unknown partner or wrong room');
-            }
-          });
-
-          // Handle stream with validation
-          peer.on('stream', (incomingStream: MediaStream) => {
-            console.log('Received remote stream:', {
-              audioTracks: incomingStream.getAudioTracks().length,
-              videoTracks: incomingStream.getVideoTracks().length,
-              audioEnabled: incomingStream.getAudioTracks().some(track => track.enabled),
-              videoEnabled: incomingStream.getVideoTracks().some(track => track.enabled)
-            });
-            
-            setRemoteStream(incomingStream);
-            if (remoteVideoRef.current) {
-              remoteVideoRef.current.srcObject = incomingStream;
-              remoteVideoRef.current.play().catch(err => {
-                console.error('Error playing remote video:', err);
-                setError('Failed to play remote video. Please check permissions.');
-              });
-            } else {
-              console.error('Remote video ref not available');
-              setError('Failed to display remote video');
-            }
-          });
-
-          // Handle ICE connection state changes with more detailed logging
-          peer.on('iceStateChange', (state) => {
-            console.log('ICE connection state changed:', {
-              state,
-              timestamp: new Date().toISOString(),
-              hasRemoteStream: !!remoteStream,
-              hasLocalStream: !!localStream
-            });
-
-            switch (state) {
-              case 'checking':
-                setConnectionStatus('Establishing connection...');
-                break;
-              case 'connected':
-                setConnectionStatus('Connected to partner');
-                setError('');
-                break;
-              case 'completed':
-                setConnectionStatus('Connection established');
-                break;
-              case 'disconnected':
-                setConnectionStatus('Connection interrupted. Trying to reconnect...');
-                console.warn('ICE connection interrupted');
-                break;
-              case 'failed':
-                console.error('ICE connection failed');
-                setError('Connection failed. Please try again.');
-                cleanupCall();
-                break;
-              case 'closed':
-                console.log('ICE connection closed');
-                cleanupCall();
-                break;
-            }
-          });
-
-          // Handle peer errors
-          peer.on('error', (err) => {
-            console.error('Peer connection error:', err);
-            setError(`Connection error: ${err.message}. Please try again.`);
-            cleanupCall();
-          });
-
-          // Handle peer close
-          peer.on('close', () => {
-            console.log('Peer connection closed');
-            cleanupCall();
-          });
-
-          // Store peer for cleanup
-          peerConnectionRef.current = peer;
-        });
+        socket.on('matchFound', handleMatchFound);
 
       } catch (error) {
         console.error('Socket initialization error:', error);
@@ -507,6 +314,195 @@ export default function VideoChat() {
       }
     };
   }, []);
+
+  // Handle match found
+  const handleMatchFound = async ({ roomId, partnerId, isInitiator }) => {
+    try {
+      console.log('Match found:', { roomId, partnerId, isInitiator });
+      setConnectionStatus('Match found! Establishing connection...');
+      
+      // Initialize media if not already done
+      let mediaStream = localStream;
+      if (!mediaStream) {
+        console.log('Initializing media for new match...');
+        mediaStream = await initializeMedia();
+      }
+
+      if (!mediaStream) {
+        throw new Error('Failed to initialize media stream');
+      }
+
+      // Initialize WebRTC connection
+      const peer = new Peer({
+        initiator: isInitiator,
+        trickle: true,
+        stream: mediaStream,
+        config: {
+          iceTransportPolicy: 'all',
+          bundlePolicy: 'max-bundle',
+          rtcpMuxPolicy: 'require',
+          iceServers: [
+            { urls: 'stun:stun.l.google.com:19302' },
+            { urls: 'stun:stun1.l.google.com:19302' },
+            { 
+              urls: [
+                'turn:openrelay.metered.ca:80',
+                'turn:openrelay.metered.ca:443',
+                'turn:openrelay.metered.ca:443?transport=tcp'
+              ],
+              username: 'openrelayproject',
+              credential: 'openrelayproject',
+            }
+          ]
+        }
+      });
+
+      // Debug peer instance
+      console.log('Peer instance created:', {
+        initiator: isInitiator,
+        hasStream: !!mediaStream,
+        streamTracks: mediaStream ? {
+          audio: mediaStream.getAudioTracks().length,
+          video: mediaStream.getVideoTracks().length
+        } : null
+      });
+
+      setCurrentPartnerId(partnerId);
+      setIsMatched(true);
+      setIsSearching(false);
+      setConnectionStatus('Connected to partner');
+      setCallStartTime(new Date());
+      setError('');
+
+      // Handle peer signals with better error handling
+      peer.on('signal', (signal) => {
+        console.log('Generated signal:', {
+          type: signal.type,
+          signalData: signal
+        });
+
+        if (!socketRef.current) {
+          console.error('Socket not available when trying to send signal');
+          setError('Connection error: Socket not available');
+          return;
+        }
+
+        try {
+          socketRef.current.emit('signal', {
+            to: partnerId,
+            signal,
+            roomId
+          });
+        } catch (error) {
+          console.error('Error sending signal:', error);
+          setError('Failed to send connection signal');
+        }
+      });
+
+      // Handle incoming signals with validation
+      socket.on('signal', ({ from, signal, roomId: incomingRoomId }) => {
+        console.log('Received signal:', { 
+          from, 
+          type: signal.type,
+          roomId: incomingRoomId,
+          signalData: signal
+        });
+
+        if (from === partnerId && incomingRoomId === roomId) {
+          try {
+            if (!signal) {
+              throw new Error('Received empty signal');
+            }
+            peer.signal(signal);
+            console.log('Successfully applied signal');
+          } catch (error) {
+            console.error('Error applying signal:', error);
+            setError('Failed to establish peer connection. Please try again.');
+          }
+        } else {
+          console.warn('Received signal from unknown partner or wrong room');
+        }
+      });
+
+      // Handle stream with validation
+      peer.on('stream', (incomingStream: MediaStream) => {
+        console.log('Received remote stream:', {
+          audioTracks: incomingStream.getAudioTracks().length,
+          videoTracks: incomingStream.getVideoTracks().length,
+          audioEnabled: incomingStream.getAudioTracks().some(track => track.enabled),
+          videoEnabled: incomingStream.getVideoTracks().some(track => track.enabled)
+        });
+        
+        setRemoteStream(incomingStream);
+        if (remoteVideoRef.current) {
+          remoteVideoRef.current.srcObject = incomingStream;
+          remoteVideoRef.current.play().catch(err => {
+            console.error('Error playing remote video:', err);
+            setError('Failed to play remote video. Please check permissions.');
+          });
+        } else {
+          console.error('Remote video ref not available');
+          setError('Failed to display remote video');
+        }
+      });
+
+      // Handle ICE connection state changes with more detailed logging
+      peer.on('iceStateChange', (state) => {
+        console.log('ICE connection state changed:', {
+          state,
+          timestamp: new Date().toISOString(),
+          hasRemoteStream: !!remoteStream,
+          hasLocalStream: !!localStream
+        });
+
+        switch (state) {
+          case 'checking':
+            setConnectionStatus('Establishing connection...');
+            break;
+          case 'connected':
+            setConnectionStatus('Connected to partner');
+            setError('');
+            break;
+          case 'completed':
+            setConnectionStatus('Connection established');
+            break;
+          case 'disconnected':
+            setConnectionStatus('Connection interrupted. Trying to reconnect...');
+            console.warn('ICE connection interrupted');
+            break;
+          case 'failed':
+            console.error('ICE connection failed');
+            setError('Connection failed. Please try again.');
+            cleanupCall();
+            break;
+          case 'closed':
+            console.log('ICE connection closed');
+            cleanupCall();
+            break;
+        }
+      });
+
+      // Handle peer errors
+      peer.on('error', (err) => {
+        console.error('Peer connection error:', err);
+        setError(`Connection error: ${err.message}. Please try again.`);
+        cleanupCall();
+      });
+
+      // Handle peer close
+      peer.on('close', () => {
+        console.log('Peer connection closed');
+        cleanupCall();
+      });
+
+      // Store peer for cleanup
+      peerConnectionRef.current = peer;
+    } catch (error) {
+      console.error('Error in handleMatchFound:', error);
+      setError('Failed to establish connection. Please try again.');
+      setConnectionStatus('Connection failed');
+    }
+  };
 
   // Handle find match click
   const handleFindMatch = useCallback(async () => {
