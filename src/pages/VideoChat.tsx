@@ -42,8 +42,6 @@ export default function VideoChat() {
   const [callStartTime, setCallStartTime] = useState<Date | null>(null);
   const [currentPartnerId, setCurrentPartnerId] = useState<string | null>(null);
   const [isSearching, setIsSearching] = useState(false);
-  const [isMatching, setIsMatching] = useState(false);
-  const [isMatched, setIsMatched] = useState(false);
 
   const socketRef = useRef<Socket>();
   const localVideoRef = useRef<HTMLVideoElement>(null);
@@ -136,21 +134,21 @@ export default function VideoChat() {
       const isHidden = document.hidden;
       console.log('Page visibility changed:', {
         isHidden,
-        isMatching,
+        isSearching,
         hasRemoteStream: !!remoteStream,
         hasLocalStream: !!localStream
       });
 
       if (isHidden) {
         // Only cleanup if we're not in an active call
-        if (!remoteStream && !isMatching) {
-          console.log('No active call or matching, stopping media tracks...');
+        if (!remoteStream && !isSearching) {
+          console.log('No active call or searching, stopping media tracks...');
           stopAllMediaTracks();
         }
       } else {
         // Page became visible
         console.log('Page visible, checking if media reinitialization needed...');
-        if (!localStream && !remoteStream && !isMatching) {
+        if (!localStream && !remoteStream && !isSearching) {
           try {
             const stream = await initializeMedia();
             setLocalStream(stream);
@@ -169,7 +167,7 @@ export default function VideoChat() {
     return () => {
       document.removeEventListener('visibilitychange', handleVisibilityChange);
     };
-  }, [localStream, remoteStream, isMatching]);
+  }, [localStream, remoteStream, isSearching]);
 
   // Initialize media on component mount
   useEffect(() => {
@@ -225,7 +223,7 @@ export default function VideoChat() {
 
         const backendUrl = import.meta.env.VITE_BACKEND_URL;
         console.log('Connecting to backend at:', backendUrl);
-
+        
         // Initialize socket connection with retry logic
         const socket = io(backendUrl, {
           auth: {
@@ -350,10 +348,18 @@ export default function VideoChat() {
               ],
               username: 'openrelayproject',
               credential: 'openrelayproject'
+            },
+            {
+              urls: [
+                'turn:relay1.expressturn.com:3478',
+                'turn:relay1.expressturn.com:3478?transport=tcp'
+              ],
+              username: 'efK7QBQMG9U5PF9K',
+              credential: 'JWU2pRvkBdF9YVK7'
             }
           ]
         },
-        sdpTransform: (sdp: string) => {
+        sdpTransform: (sdp) => {
           // Add ICE restart support and bundle policy
           sdp = sdp.replace(/a=ice-options:trickle\r\n/g, 'a=ice-options:trickle renomination\r\n');
           sdp = sdp.replace(/a=group:BUNDLE/g, 'a=group:BUNDLE 0');
@@ -385,7 +391,6 @@ export default function VideoChat() {
       });
 
       setCurrentPartnerId(partnerId);
-      setIsMatched(true);
       setIsSearching(false);
       setConnectionStatus('Connected to partner');
       setCallStartTime(new Date());
@@ -401,6 +406,7 @@ export default function VideoChat() {
       let connectionTimeout: number;
       const resetConnectionTimeout = () => {
         if (connectionTimeout) window.clearTimeout(connectionTimeout);
+        
         connectionTimeout = window.setTimeout(async () => {
           if (reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
             console.log(`Connection timeout - attempting reconnect (${reconnectAttempts + 1}/${MAX_RECONNECT_ATTEMPTS})`);
@@ -425,56 +431,12 @@ export default function VideoChat() {
                   }
                 }
 
-                // Create a new peer connection
+                // Create a new peer connection with the same configuration
                 const newPeer = new Peer({
                   initiator: isInitiator,
                   trickle: true,
                   stream: localStream,
-                  config: {
-                    iceTransportPolicy: 'all',
-                    bundlePolicy: 'max-bundle',
-                    rtcpMuxPolicy: 'require',
-                    iceCandidatePoolSize: 10,
-                    iceServers: [
-                      { 
-                        urls: [
-                          'stun:stun1.l.google.com:19302',
-                          'stun:stun2.l.google.com:19302',
-                          'stun:stun3.l.google.com:19302',
-                          'stun:stun4.l.google.com:19302'
-                        ]
-                      },
-                      {
-                        urls: [
-                          'turn:a.relay.metered.ca:80',
-                          'turn:a.relay.metered.ca:80?transport=tcp',
-                          'turn:a.relay.metered.ca:443',
-                          'turn:a.relay.metered.ca:443?transport=tcp'
-                        ],
-                        username: 'e899a0e2c0e6a7c4d2b8f8d6',
-                        credential: 'SrmConnect123'
-                      },
-                      {
-                        urls: [
-                          'turn:openrelay.metered.ca:80',
-                          'turn:openrelay.metered.ca:443',
-                          'turn:openrelay.metered.ca:443?transport=tcp'
-                        ],
-                        username: 'openrelayproject',
-                        credential: 'openrelayproject'
-                      }
-                    ]
-                  },
-                  sdpTransform: (sdp: string) => {
-                    // Add ICE restart support and bundle policy
-                    sdp = sdp.replace(/a=ice-options:trickle\r\n/g, 'a=ice-options:trickle renomination\r\n');
-                    sdp = sdp.replace(/a=group:BUNDLE/g, 'a=group:BUNDLE 0');
-                    // Increase UDP candidate priority
-                    sdp = sdp.replace(/a=candidate:(\S*)\s+udp/gi, 'a=candidate:$1 udp 2130706431');
-                    // Add bandwidth constraints for better quality
-                    sdp = sdp.replace(/c=IN IP4.*\r\n/g, '$&b=AS:2000\r\n');
-                    return sdp;
-                  }
+                  config: peer._pc.getConfiguration()
                 }) as ExtendedPeer;
 
                 // Update the peer reference
@@ -483,23 +445,20 @@ export default function VideoChat() {
                 // Set up listeners for the new peer
                 setupPeerListeners(newPeer);
 
-                // Clean up old peer without using process.nextTick
-                try {
-                  peer.destroy();
-                } catch (e) {
-                  console.warn('Error destroying old peer:', e);
-                }
-
-                // Reset timeout for new connection
+                // Reset timeout for the new connection
                 resetConnectionTimeout();
+              } else {
+                throw new Error('Peer not available for reconnection');
               }
             } catch (error) {
               console.error('Error during reconnection attempt:', error);
-              cleanupCall();
+              await cleanupCall();
+              setError('Connection failed. Please try finding a new match.');
+              setConnectionStatus('Connection failed');
             }
           } else {
-            console.error('Max reconnection attempts reached - cleaning up');
-            cleanupCall();
+            console.error('Max reconnection attempts reached');
+            await cleanupCall();
             setError('Connection failed after multiple attempts. Please try again.');
             setConnectionStatus('Connection failed');
           }
@@ -508,11 +467,6 @@ export default function VideoChat() {
 
       // Set up all peer event listeners
       const setupPeerListeners = (peer: ExtendedPeer) => {
-        if (!peer || !peer._pc) {
-          console.error('Invalid peer or peer connection');
-          return;
-        }
-
         // Track ICE gathering state
         const gatheredCandidates = {
           host: 0,
@@ -521,94 +475,64 @@ export default function VideoChat() {
         };
 
         peer._pc.onicecandidate = (event) => {
-          if (!peer._pc || peer.destroyed) {
-            console.warn('Peer connection no longer valid during ICE candidate gathering');
-            return;
-          }
-
           if (event.candidate) {
             const candidate = event.candidate;
-            if (candidate.type) {  // Add null check for candidate type
-              gatheredCandidates[candidate.type as keyof typeof gatheredCandidates]++;
-              
-              console.log('ICE candidate:', {
-                type: candidate.type,
-                protocol: candidate.protocol,
-                address: candidate.address,
-                port: candidate.port,
-                counts: { ...gatheredCandidates }
-              });
-            }
+            gatheredCandidates[candidate.type as keyof typeof gatheredCandidates]++;
+            
+            console.log('ICE candidate:', {
+              type: candidate.type,
+              protocol: candidate.protocol,
+              address: candidate.address,
+              port: candidate.port,
+              counts: { ...gatheredCandidates }
+            });
           } else {
             console.log('ICE gathering complete. Final candidates:', gatheredCandidates);
           }
         };
 
         peer._pc.onicegatheringstatechange = () => {
-          if (!peer._pc || peer.destroyed) {
-            console.warn('Peer connection no longer valid during ICE gathering state change');
-            return;
-          }
+          const state = peer._pc.iceGatheringState;
+          console.log('ICE gathering state changed:', {
+            state,
+            candidates: { ...gatheredCandidates },
+            timestamp: new Date().toISOString()
+          });
 
-          try {
-            const state = peer._pc.iceGatheringState;
-            console.log('ICE gathering state changed:', {
-              state,
-              candidates: { ...gatheredCandidates },
-              timestamp: new Date().toISOString()
-            });
+          if (state === 'complete') {
+            // Check if we have enough candidates
+            const hasEnoughCandidates = 
+              gatheredCandidates.host > 0 || 
+              gatheredCandidates.srflx > 0 || 
+              gatheredCandidates.relay > 0;
 
-            if (state === 'complete') {
-              // Check if we have enough candidates
-              const hasEnoughCandidates = 
-                gatheredCandidates.host > 0 || 
-                gatheredCandidates.srflx > 0 || 
-                gatheredCandidates.relay > 0;
-
-              if (!hasEnoughCandidates) {
-                console.warn('No usable ICE candidates found - connection may fail');
-                setError('Connection issue: No valid network paths found');
-              }
+            if (!hasEnoughCandidates) {
+              console.warn('No usable ICE candidates found - connection may fail');
+              setError('Connection issue: No valid network paths found');
             }
-          } catch (error) {
-            console.warn('Error accessing ICE gathering state:', error);
           }
         };
 
-        // Monitor connection state
-        peer._pc.onconnectionstatechange = () => {
-          if (!peer._pc || peer.destroyed) {
-            console.warn('Peer connection no longer valid during connection state change');
-            return;
-          }
-
-          try {
-            const state = peer._pc.connectionState;
-            console.log('Connection state changed:', state);
-            
-            if (state === 'failed' || state === 'disconnected') {
-              if (!isReconnecting && reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
-                console.log('Connection state indicates failure, attempting reconnect');
-                isReconnecting = true;
-                resetConnectionTimeout();
-              }
-            }
-          } catch (error) {
-            console.warn('Error accessing connection state:', error);
-          }
-        };
-
-        // Handle peer signals
         peer.on('signal', (signal) => {
-          if (!socketRef.current || !currentPartnerId) {
-            console.warn('Socket or partner ID not available for signaling');
+          console.log('Generated signal:', {
+            type: signal.type,
+            isReconnecting,
+            timestamp: new Date().toISOString(),
+            iceGatheringState: peer._pc.iceGatheringState,
+            connectionState: peer._pc.connectionState
+          });
+
+          if (!socketRef.current) {
+            console.error('Socket not available when trying to send signal');
             return;
           }
 
           try {
             socketRef.current.emit('signal', {
+              to: partnerId,
               signal,
-              targetUserId: currentPartnerId
+              roomId,
+              isReconnecting
             });
           } catch (error) {
             console.error('Error sending signal:', error);
@@ -727,7 +651,7 @@ export default function VideoChat() {
       setIsSearching(true);
       setConnectionStatus('Looking for a match...');
       setError('');
-
+    
       console.log('Emitting findMatch event');
       socketRef.current.emit('findMatch');
     } catch (error) {
@@ -738,39 +662,53 @@ export default function VideoChat() {
   }, [localStream, socketRef]);
 
   // Cleanup function
-  const cleanupCall = useCallback(() => {
+  const cleanupCall = useCallback(async () => {
     console.log('Cleaning up call...');
     
     // Clean up peer connection
     if (peerConnectionRef.current) {
       console.log('Destroying peer connection');
       try {
-        // Safely remove event listeners before destroying
-        const events = ['signal', 'connect', 'error', 'close', 'stream'];
-        events.forEach(event => {
+        const peer = peerConnectionRef.current;
+        
+        // First, close the underlying RTCPeerConnection
+        if (peer._pc) {
           try {
-            peerConnectionRef.current?.removeAllListeners(event);
+            // Remove all tracks
+            const senders = peer._pc.getSenders();
+            for (const sender of senders) {
+              peer._pc.removeTrack(sender);
+            }
+            
+            // Close the connection
+            peer._pc.close();
+          } catch (e) {
+            console.warn('Error closing peer connection:', e);
+          }
+        }
+
+        // Remove event listeners one by one
+        const events = ['signal', 'connect', 'error', 'close', 'stream'];
+        for (const event of events) {
+          try {
+            peer.removeAllListeners(event);
           } catch (e) {
             console.warn(`Error removing listeners for ${event}:`, e);
           }
-        });
-        
-        // Close peer connection
-        if (peerConnectionRef.current._pc) {
-          peerConnectionRef.current._pc.close();
         }
-        
-        // Destroy peer after a short delay to allow cleanup
-        setTimeout(() => {
-          try {
-            if (peerConnectionRef.current && !peerConnectionRef.current.destroyed) {
-              peerConnectionRef.current.destroy();
-            }
-          } catch (e) {
-            console.warn('Error destroying peer:', e);
-          }
-          peerConnectionRef.current = null;
-        }, 100);
+
+        // Set destroyed flag before actual destroy
+        peer.destroyed = true;
+
+        // Destroy the peer instance
+        try {
+          peer.destroy();
+        } catch (e) {
+          console.warn('Error destroying peer:', e);
+        }
+
+        // Clear the reference
+        peerConnectionRef.current = null;
       } catch (error) {
         console.warn('Error during peer cleanup:', error);
         peerConnectionRef.current = null;
@@ -780,33 +718,44 @@ export default function VideoChat() {
     // Clean up socket listeners
     if (socketRef.current) {
       console.log('Removing socket listeners');
-      socketRef.current.off('signal');
-      socketRef.current.off('stream');
-      socketRef.current.off('connect');
-      socketRef.current.off('error');
-      socketRef.current.off('close');
-      socketRef.current.off('chatMessage');
-      socketRef.current.off('like');
-      socketRef.current.off('partnerDisconnected');
+      const events = ['signal', 'stream', 'connect', 'error', 'close', 'chatMessage', 'like', 'partnerDisconnected'];
+      events.forEach(event => {
+        try {
+          socketRef.current?.off(event);
+        } catch (e) {
+          console.warn(`Error removing socket listener for ${event}:`, e);
+        }
+      });
     }
 
     // Stop remote stream
     if (remoteStream) {
       console.log('Stopping remote stream tracks');
-      remoteStream.getTracks().forEach(track => {
-        track.stop();
-      });
-      setRemoteStream(undefined);
+      try {
+        remoteStream.getTracks().forEach(track => {
+          try {
+            track.stop();
+          } catch (e) {
+            console.warn('Error stopping track:', e);
+          }
+        });
+        setRemoteStream(undefined);
+      } catch (e) {
+        console.warn('Error stopping remote stream:', e);
+      }
     }
 
-    // Clear remote video
+    // Clear remote video with error handling
     if (remoteVideoRef.current) {
       console.log('Clearing remote video element');
-      remoteVideoRef.current.srcObject = null;
+      try {
+        remoteVideoRef.current.srcObject = null;
+      } catch (e) {
+        console.warn('Error clearing remote video:', e);
+      }
     }
 
     // Reset states
-    setIsMatched(false);
     setCurrentPartnerId(null);
     setConnectionStatus('Call ended');
     setMessages([]);
