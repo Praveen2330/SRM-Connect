@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { io, Socket } from 'socket.io-client';
 import Peer from 'simple-peer';
 import { supabase } from '../lib/supabase';
-import { Heart, MessageCircle, X, ThumbsUp, Send } from 'lucide-react';
+import { Heart, MessageCircle, X, Send } from 'lucide-react';
 import { RecentActivity } from '../types/activity';
 
 interface Message {
@@ -11,6 +11,16 @@ interface Message {
   content: string;
   timestamp: Date;
   from: 'You' | 'Partner';
+}
+
+interface SignalData {
+  signal: any;
+  from: string;
+}
+
+interface ChatMessage {
+  content: string;
+  from: string;
 }
 
 export default function VideoChat() {
@@ -35,6 +45,61 @@ export default function VideoChat() {
   const remoteVideoRef = useRef<HTMLVideoElement>(null);
   const chatContainerRef = useRef<HTMLDivElement>(null);
 
+  // Initialize media function with retries
+  const initializeMedia = async () => {
+    const maxRetries = 3;
+    let lastError;
+
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      try {
+        console.log(`Requesting media permissions (attempt ${attempt}/${maxRetries})...`);
+        const stream = await navigator.mediaDevices.getUserMedia({
+          video: {
+            width: { ideal: 1280 },
+            height: { ideal: 720 },
+            facingMode: 'user'
+          },
+          audio: {
+            echoCancellation: true,
+            noiseSuppression: true
+          }
+        });
+
+        console.log('Media permissions granted, checking stream...', {
+          audioTracks: stream.getAudioTracks().length,
+          videoTracks: stream.getVideoTracks().length
+        });
+
+        // Verify we have both audio and video tracks
+        if (!stream.getAudioTracks().length || !stream.getVideoTracks().length) {
+          throw new Error('Stream is missing audio or video tracks');
+        }
+
+        // Set up the stream
+        if (localVideoRef.current) {
+          localVideoRef.current.srcObject = stream;
+        }
+        setLocalStream(stream);
+        setError('');
+        
+        console.log('Media initialization successful');
+        return stream;
+      } catch (error) {
+        console.error(`Media initialization attempt ${attempt} failed:`, error);
+        lastError = error;
+        
+        // Wait before retrying
+        if (attempt < maxRetries) {
+          await new Promise(resolve => setTimeout(resolve, 1000));
+        }
+      }
+    }
+
+    console.error('All media initialization attempts failed');
+    setError('Failed to access camera and microphone. Please check permissions.');
+    throw lastError;
+  };
+
   useEffect(() => {
     const checkAuth = async () => {
       const { data: { user } } = await supabase.auth.getUser();
@@ -47,6 +112,116 @@ export default function VideoChat() {
     checkAuth();
   }, [navigate]);
 
+  // Function to stop all media tracks
+  const stopAllMediaTracks = () => {
+    console.log('Stopping all media tracks...');
+    
+    // Stop local stream tracks
+    if (localStream) {
+      localStream.getTracks().forEach(track => {
+        console.log(`Stopping local stream track: ${track.kind}`);
+        track.stop();
+      });
+      setLocalStream(null);
+    }
+    
+    // Stop remote stream tracks
+    if (remoteStream) {
+      remoteStream.getTracks().forEach(track => {
+        console.log(`Stopping remote stream track: ${track.kind}`);
+        track.stop();
+      });
+      setRemoteStream(null);
+    }
+
+    // Clear video elements
+    if (localVideoRef.current) {
+      localVideoRef.current.srcObject = null;
+    }
+    if (remoteVideoRef.current) {
+      remoteVideoRef.current.srcObject = null;
+    }
+  };
+
+  // Handle page visibility changes
+  useEffect(() => {
+    const handleVisibilityChange = async () => {
+      if (document.hidden) {
+        console.log('Page hidden, checking stream status...', {
+          isMatching,
+          hasRemoteStream: !!remoteStream,
+          hasLocalStream: !!localStream
+        });
+        
+        // Keep media active if we're matching or in a call
+        if (isMatching || remoteStream) {
+          console.log('Keeping media tracks active (matching or in call)');
+        } else {
+          console.log('No active call or matching, stopping media tracks...');
+          stopAllMediaTracks();
+        }
+      } else {
+        console.log('Page visible, checking if media reinitialization needed...');
+        // Reinitialize if we're matching or in a call but don't have a stream
+        if ((isMatching || remoteStream) && !localStream) {
+          console.log('Reinitializing media...');
+          try {
+            await initializeMedia();
+          } catch (error) {
+            console.error('Failed to reinitialize media:', error);
+            setError('Failed to reinitialize camera. Please refresh the page.');
+          }
+        }
+      }
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
+  }, [isMatching, localStream, remoteStream]);
+
+  // Initialize media on component mount
+  useEffect(() => {
+    console.log('Initializing media on component mount...');
+    initializeMedia().catch(error => {
+      console.error('Failed to initialize media on mount:', error);
+    });
+
+    return () => {
+      console.log('Cleaning up media on unmount...');
+      stopAllMediaTracks();
+    };
+  }, []);
+
+  // Remove the duplicate visibility change handler
+  useEffect(() => {
+    const handleBeforeUnload = () => {
+      console.log('Page unload detected, stopping media tracks...');
+      stopAllMediaTracks();
+      if (socketRef.current) {
+        socketRef.current.disconnect();
+      }
+    };
+
+    const handlePopState = () => {
+      console.log('Navigation detected, stopping media tracks...');
+      stopAllMediaTracks();
+      if (socketRef.current) {
+        socketRef.current.disconnect();
+      }
+    };
+
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    window.addEventListener('popstate', handlePopState);
+
+    return () => {
+      window.removeEventListener('beforeunload', handleBeforeUnload);
+      window.removeEventListener('popstate', handlePopState);
+    };
+  }, []);
+
+  // Socket connection setup
   useEffect(() => {
     const initializeSocket = async () => {
       try {
@@ -62,25 +237,14 @@ export default function VideoChat() {
         console.log('Connecting to backend at:', backendUrl);
 
         // Try to ping the server first
-        let serverResponding = false;
-        for (let i = 1; i <= 3; i++) {
-          try {
-            console.log(`Pinging server attempt ${i}...`);
-            const response = await fetch(`${backendUrl}/health`, {
-              signal: AbortSignal.timeout(5000) // 5 second timeout
-            });
-            if (response.ok) {
-              console.log('Server is awake and responding');
-              serverResponding = true;
-              break;
-            }
-          } catch (error) {
-            console.warn(`Ping attempt ${i} failed:`, error);
-            await new Promise(resolve => setTimeout(resolve, 2000)); // Wait 2 seconds between attempts
+        try {
+          console.log('Pinging server attempt 1...');
+          const response = await fetch(`${backendUrl}/health`);
+          if (response.ok) {
+            console.log('Server is awake and responding');
           }
-        }
-
-        if (!serverResponding) {
+        } catch (error) {
+          console.error('Server ping failed:', error);
           setError('Unable to connect to video chat server. Please try again later.');
           return;
         }
@@ -90,38 +254,58 @@ export default function VideoChat() {
           auth: {
             token: session.access_token
           },
+          query: {
+            userId: session.user.id // Add user ID to connection query
+          },
           transports: ['websocket', 'polling'],
           reconnection: true,
           reconnectionAttempts: 3,
           reconnectionDelay: 1000,
           reconnectionDelayMax: 5000,
-          timeout: 10000
+          timeout: 10000,
+          forceNew: true
         });
 
         socket.on('connect', () => {
           console.log('Socket connected successfully');
-          setConnectionStatus('connected');
+          setConnectionStatus('Connected to server');
+          setIsConnected(true);
+          setError('');
         });
 
         socket.on('connect_error', (error) => {
           console.error('Socket connection error:', error);
           setError('Failed to connect to video chat server. Please try again.');
+          setIsConnected(false);
         });
 
         socket.on('disconnect', (reason) => {
           console.log('Socket disconnected:', reason);
-          setConnectionStatus('disconnected');
+          setConnectionStatus('Disconnected from server');
+          setIsConnected(false);
           if (reason === 'io server disconnect') {
             // Server disconnected us, try to reconnect
             socket.connect();
           }
         });
 
+        // Add matchFound event handler
+        socket.on('matchFound', async ({ roomId, partnerId, isInitiator }) => {
+          console.log('Match found:', { roomId, partnerId, isInitiator });
+          setIsMatching(false);
+          setCurrentPartnerId(partnerId);
+          setCallStartTime(new Date());
+          
+          try {
+            await initializePeer(isInitiator, partnerId);
+            setError('');
+          } catch (error) {
+            console.error('Failed to initialize peer connection:', error);
+            setError('Failed to establish connection with partner. Please try again.');
+          }
+        });
+
         socketRef.current = socket;
-        return () => {
-          console.log('Cleaning up socket connection...');
-          socket.disconnect();
-        };
       } catch (error) {
         console.error('Socket initialization error:', error);
         setError('Failed to initialize video chat. Please try again.');
@@ -129,169 +313,15 @@ export default function VideoChat() {
     };
 
     initializeSocket();
-  }, []);
 
-  // Separate useEffect for media initialization
-  useEffect(() => {
-    const initializeMedia = async () => {
-      try {
-        console.log('Requesting media permissions...');
-        
-        // First check if media devices are supported
-        if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-          throw new Error('Your browser does not support video chat. Please try a different browser.');
-        }
-
-        // List available devices to debug
-        const devices = await navigator.mediaDevices.enumerateDevices();
-        const videoDevices = devices.filter(device => device.kind === 'videoinput');
-        const audioDevices = devices.filter(device => device.kind === 'audioinput');
-        
-        console.log('Available video devices:', videoDevices.length);
-        console.log('Available audio devices:', audioDevices.length);
-
-        if (videoDevices.length === 0) {
-          throw new Error('No camera found. Please connect a camera and refresh the page.');
-        }
-
-        // Try to get media stream with retries
-        let retryCount = 0;
-        const maxRetries = 3;
-        let lastError;
-
-        while (retryCount < maxRetries) {
-          try {
-            const stream = await navigator.mediaDevices.getUserMedia({ 
-              video: {
-                width: { ideal: 1280 },
-                height: { ideal: 720 },
-                facingMode: 'user'
-              }, 
-              audio: {
-                echoCancellation: true,
-                noiseSuppression: true
-              }
-            });
-
-            console.log('Got local media stream');
-            
-            // Check if we actually got video tracks
-            const videoTrack = stream.getVideoTracks()[0];
-            if (!videoTrack) {
-              throw new Error('Failed to get video track');
-            }
-
-            console.log('Video track settings:', videoTrack.getSettings());
-
-            setLocalStream(stream);
-            if (localVideoRef.current) {
-              localVideoRef.current.srcObject = stream;
-            }
-
-            // Clear any previous errors
-            setError('');
-            return;
-          } catch (err) {
-            lastError = err;
-            retryCount++;
-            console.log(`Attempt ${retryCount} failed, retrying...`);
-            await new Promise(resolve => setTimeout(resolve, 1000)); // Wait 1 second before retrying
-          }
-        }
-
-        // If we get here, all retries failed
-        throw lastError;
-      } catch (err) {
-        console.error('Failed to get user media:', err);
-        if (err instanceof Error) {
-          if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError') {
-            setError('Camera access denied. Please grant permission in your browser settings and refresh the page.');
-          } else if (err.name === 'NotFoundError' || err.name === 'DevicesNotFoundError') {
-            setError('No camera found. Please connect a camera and refresh the page.');
-          } else if (err.name === 'NotReadableError' || err.name === 'TrackStartError') {
-            setError('Camera is in use by another application. Please close other apps using the camera.');
-          } else if (err.name === 'OverconstrainedError') {
-            setError('Your camera does not support the required resolution. Trying with lower quality...');
-            // Try again with lower constraints
-            try {
-              const stream = await navigator.mediaDevices.getUserMedia({ 
-                video: true, 
-                audio: true 
-              });
-              setLocalStream(stream);
-              if (localVideoRef.current) {
-                localVideoRef.current.srcObject = stream;
-              }
-              setError('');
-            } catch (fallbackErr) {
-              setError('Failed to access camera with lower quality settings.');
-            }
-          } else {
-            setError(`Failed to access camera: ${err.message}`);
-          }
-        } else {
-          setError('Failed to access camera and microphone. Please ensure you have granted permission.');
-        }
-      }
-    };
-
-    initializeMedia();
-
+    // Cleanup function
     return () => {
-      stopAllMediaTracks();
+      if (socketRef.current) {
+        console.log('Cleaning up socket connection...');
+        socketRef.current.disconnect();
+      }
     };
   }, []);
-
-  // Function to stop all media tracks
-  const stopAllMediaTracks = () => {
-    console.log('Stopping all media tracks...');
-    
-    // Stop local stream tracks
-    if (localVideoRef.current) {
-      if (localVideoRef.current.srcObject) {
-        const stream = localVideoRef.current.srcObject as MediaStream;
-        stream.getTracks().forEach(track => {
-          console.log('Stopping local track:', track.kind);
-          track.enabled = false;
-          track.stop();
-        });
-      }
-      localVideoRef.current.srcObject = null;
-      localVideoRef.current.pause();
-    }
-    
-    if (localStream) {
-      localStream.getTracks().forEach(track => {
-        console.log('Stopping local stream track:', track.kind);
-        track.enabled = false;
-        track.stop();
-      });
-      setLocalStream(null);
-    }
-
-    // Stop remote stream tracks
-    if (remoteVideoRef.current) {
-      if (remoteVideoRef.current.srcObject) {
-        const stream = remoteVideoRef.current.srcObject as MediaStream;
-        stream.getTracks().forEach(track => {
-          console.log('Stopping remote track:', track.kind);
-          track.enabled = false;
-          track.stop();
-        });
-      }
-      remoteVideoRef.current.srcObject = null;
-      remoteVideoRef.current.pause();
-    }
-    
-    if (remoteStream) {
-      remoteStream.getTracks().forEach(track => {
-        console.log('Stopping remote stream track:', track.kind);
-        track.enabled = false;
-        track.stop();
-      });
-      setRemoteStream(null);
-    }
-  };
 
   const initializePeer = async (isInitiator: boolean, partnerId: string) => {
     if (!localStream) {
@@ -362,13 +392,13 @@ export default function VideoChat() {
       socketRef.current?.off('signal');
 
       // Handle incoming signals
-      socketRef.current?.on('signal', ({ signal, from }) => {
-        if (from === partnerId) {  // Only accept signals from our partner
+      socketRef.current?.on('signal', ({ signal, from }: SignalData) => {
+        if (from === partnerId) {
           console.log('Received signal from partner:', from);
           try {
             peerRef.current?.signal(signal);
-          } catch (err) {
-            console.error('Error processing signal:', err);
+          } catch (error) {
+            console.error('Error processing signal:', error);
             setError('Failed to process connection signal. Please try again.');
           }
         }
@@ -386,29 +416,52 @@ export default function VideoChat() {
       return;
     }
 
-    // Ensure we have a local stream before finding a match
-    if (!localStream) {
-      try {
-        console.log('No local stream, attempting to initialize...');
-        await initializeMedia();
-      } catch (err) {
-        setError('Failed to access camera. Please check camera permissions and try again.');
-        return;
-      }
-    }
+    try {
+      setIsMatching(true);
+      setError('');
 
-    console.log('Finding match...');
-    setIsMatching(true);
-    setError('');
-    
-    // Remove any existing peer connection
-    if (peerRef.current) {
-      peerRef.current.destroy();
-      peerRef.current = undefined;
+      // Ensure we have a local stream before finding a match
+      if (!localStream) {
+        console.log('No local stream, initializing media...');
+        const stream = await initializeMedia();
+        if (!stream) {
+          throw new Error('Failed to initialize media stream');
+        }
+      } else {
+        console.log('Using existing local stream:', {
+          audioTracks: localStream.getAudioTracks().length,
+          videoTracks: localStream.getVideoTracks().length
+        });
+      }
+
+      // Double check that we have a valid stream with tracks
+      if (!localStream?.getTracks().length) {
+        console.log('Stream has no tracks, reinitializing...');
+        const stream = await initializeMedia();
+        if (!stream) {
+          throw new Error('Failed to initialize media stream');
+        }
+      }
+
+      console.log('Starting match search with valid stream...');
+
+      // Emit findMatch event to server
+      console.log('Emitting findMatch event to server...');
+      socketRef.current?.emit('findMatch');
+
+      // Add a timeout to stop searching after 30 seconds
+      setTimeout(() => {
+        if (isMatching) {
+          console.log('Match search timeout...');
+          setIsMatching(false);
+          setError('Could not find a match. Please try again.');
+        }
+      }, 30000);
+    } catch (error) {
+      console.error('Error in handleFindMatch:', error);
+      setIsMatching(false);
+      setError('Failed to initialize camera. Please check permissions and try again.');
     }
-    
-    console.log('Emitting findMatch event to server...');
-    socketRef.current?.emit('findMatch');
   };
 
   const handleEndCall = async () => {
@@ -485,68 +538,6 @@ export default function VideoChat() {
     }, 300);
   };
 
-  // Add event listener for beforeunload and visibility change
-  useEffect(() => {
-    const handleBeforeUnload = () => {
-      console.log('Page unload detected, stopping media tracks...');
-      stopAllMediaTracks();
-      if (socketRef.current) {
-        socketRef.current.disconnect();
-      }
-    };
-
-    const handleVisibilityChange = () => {
-      if (document.visibilityState === 'hidden') {
-        console.log('Page hidden, stopping media tracks...');
-        stopAllMediaTracks();
-      }
-    };
-
-    const handlePopState = () => {
-      console.log('Navigation detected, stopping media tracks...');
-      stopAllMediaTracks();
-      if (socketRef.current) {
-        socketRef.current.disconnect();
-      }
-    };
-
-    window.addEventListener('beforeunload', handleBeforeUnload);
-    document.addEventListener('visibilitychange', handleVisibilityChange);
-    window.addEventListener('popstate', handlePopState);
-
-    return () => {
-      window.removeEventListener('beforeunload', handleBeforeUnload);
-      document.removeEventListener('visibilitychange', handleVisibilityChange);
-      window.removeEventListener('popstate', handlePopState);
-    };
-  }, []);
-
-  // Cleanup effect
-  useEffect(() => {
-    return () => {
-      console.log('Component unmounting, cleaning up...');
-      stopAllMediaTracks();
-      if (peerRef.current) {
-        peerRef.current.destroy();
-        peerRef.current = undefined;
-      }
-      if (socketRef.current) {
-        socketRef.current.disconnect();
-      }
-      // Force cleanup of video elements
-      if (localVideoRef.current) {
-        localVideoRef.current.srcObject = null;
-        localVideoRef.current.pause();
-        localVideoRef.current.load();
-      }
-      if (remoteVideoRef.current) {
-        remoteVideoRef.current.srcObject = null;
-        remoteVideoRef.current.pause();
-        remoteVideoRef.current.load();
-      }
-    };
-  }, []);
-
   const handleSendMessage = () => {
     if (!newMessage.trim() || !socketRef.current) return;
 
@@ -589,7 +580,7 @@ export default function VideoChat() {
   useEffect(() => {
     if (!socketRef.current) return;
 
-    socketRef.current.on('chatMessage', ({ content, from }) => {
+    socketRef.current.on('chatMessage', ({ content, from }: ChatMessage) => {
       const message: Message = {
         id: Date.now().toString(),
         content,

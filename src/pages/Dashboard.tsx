@@ -29,49 +29,59 @@ function Dashboard() {
           return;
         }
 
-        // First, try to get the existing record
-        let { data, error } = await supabase
+        // Get all activities for the user
+        const { data, error } = await supabase
           .from('recent_activities')
           .select('*')
           .eq('user_id', user.id)
-          .maybeSingle();
+          .order('created_at', { ascending: false });
 
         if (error) {
           console.error('Error fetching activities:', error);
-          
-          // If no record exists, create one
-          if (error.code === 'PGRST116') {
-            const { data: newData, error: insertError } = await supabase
-              .from('recent_activities')
-              .insert([
-                { 
-                  user_id: user.id,
-                  activities: []
-                }
-              ])
-              .select('*')
-              .single();
+          return;
+        }
 
-            if (insertError) {
-              console.error('Error creating activities record:', insertError);
-              return;
-            }
-            
-            data = newData;
-          } else {
+        // If no activities exist, create an empty record
+        let activities = data;
+        if (!activities || activities.length === 0) {
+          const { data: newData, error: insertError } = await supabase
+            .from('recent_activities')
+            .insert([
+              { 
+                user_id: user.id,
+                activities: [],
+                created_at: new Date().toISOString()
+              }
+            ])
+            .select()
+            .single();
+
+          if (insertError) {
+            console.error('Error creating activities record:', insertError);
             return;
           }
+          
+          activities = [newData];
         }
 
-        if (data?.activities) {
-          const parsedActivities = Array.isArray(data.activities) ? data.activities : [];
-          setActivities(parsedActivities.map((activity: RecentActivity & { timestamp: string }) => ({
+        // Process all activities
+        const allActivities = activities.reduce((acc, record) => {
+          const recordActivities = Array.isArray(record.activities) ? record.activities : [];
+          return [...acc, ...recordActivities];
+        }, [] as RecentActivity[]);
+
+        // Sort activities by timestamp and take the most recent 10
+        const sortedActivities = allActivities
+          .map((activity: RecentActivity) => ({
             ...activity,
             timestamp: new Date(activity.timestamp)
-          })));
-        } else {
-          setActivities([]);
-        }
+          }))
+          .sort((a: RecentActivity, b: RecentActivity) => 
+            new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()
+          )
+          .slice(0, 10);
+
+        setActivities(sortedActivities);
       } catch (error) {
         console.error('Error in fetchActivities:', error);
       } finally {
