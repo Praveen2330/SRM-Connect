@@ -322,10 +322,16 @@ export default function VideoChat() {
           iceTransportPolicy: 'all',
           bundlePolicy: 'max-bundle',
           rtcpMuxPolicy: 'require',
-          iceCandidatePoolSize: 1,
+          iceCandidatePoolSize: 10,
           iceServers: [
-            { urls: 'stun:stun.l.google.com:19302' },
-            { urls: 'stun:stun1.l.google.com:19302' },
+            { 
+              urls: [
+                'stun:stun1.l.google.com:19302',
+                'stun:stun2.l.google.com:19302',
+                'stun:stun3.l.google.com:19302',
+                'stun:stun4.l.google.com:19302'
+              ]
+            },
             {
               urls: [
                 'turn:a.relay.metered.ca:80',
@@ -339,12 +345,14 @@ export default function VideoChat() {
           ]
         },
         sdpTransform: (sdp) => {
-          // Add ICE restart support
+          // Add ICE restart support and bundle policy
           sdp = sdp.replace(/a=ice-options:trickle\r\n/g, 'a=ice-options:trickle renomination\r\n');
-          // Increase UDP candidate priority
+          sdp = sdp.replace(/a=group:BUNDLE/g, 'a=group:BUNDLE 0');
+          // Increase UDP candidate priority and add bandwidth constraints
           sdp = sdp.replace(/a=candidate:(\S*)\s+udp/gi, 'a=candidate:$1 udp 2130706431');
-          // Add bandwidth constraints
           sdp = sdp.replace(/c=IN IP4.*\r\n/g, '$&b=AS:2000\r\n');
+          // Add ICE candidate policy
+          sdp = sdp.replace(/a=ice-pwd/g, 'a=ice-lite\r\na=ice-pwd');
           return sdp;
         }
       }) as ExtendedPeer;
@@ -430,11 +438,44 @@ export default function VideoChat() {
 
       // Set up all peer event listeners
       const setupPeerListeners = (peer: ExtendedPeer) => {
+        // Track ICE gathering state
+        let hasGatheredIceCandidates = false;
+        let iceGatheringTimeout: number;
+
+        peer._pc.onicecandidate = (event) => {
+          console.log('ICE candidate:', event.candidate ? {
+            type: event.candidate.type,
+            protocol: event.candidate.protocol,
+            address: event.candidate.address,
+            port: event.candidate.port
+          } : 'null (gathering complete)');
+        };
+
+        peer._pc.onicegatheringstatechange = () => {
+          console.log('ICE gathering state:', peer._pc.iceGatheringState);
+          if (peer._pc.iceGatheringState === 'complete') {
+            hasGatheredIceCandidates = true;
+            if (iceGatheringTimeout) {
+              window.clearTimeout(iceGatheringTimeout);
+            }
+          }
+        };
+
+        // Set ICE gathering timeout
+        iceGatheringTimeout = window.setTimeout(() => {
+          if (!hasGatheredIceCandidates) {
+            console.warn('ICE gathering timed out - proceeding with available candidates');
+            hasGatheredIceCandidates = true;
+          }
+        }, 5000);
+
         peer.on('signal', (signal) => {
           console.log('Generated signal:', {
             type: signal.type,
             isReconnecting,
-            timestamp: new Date().toISOString()
+            timestamp: new Date().toISOString(),
+            iceGatheringState: peer._pc.iceGatheringState,
+            connectionState: peer._pc.connectionState
           });
 
           if (!socketRef.current) {
@@ -455,7 +496,11 @@ export default function VideoChat() {
         });
 
         peer.on('connect', () => {
-          console.log('Peer connection established');
+          console.log('Peer connection established:', {
+            iceGatheringState: peer._pc.iceGatheringState,
+            connectionState: peer._pc.connectionState,
+            timestamp: new Date().toISOString()
+          });
           setConnectionStatus('Connected to partner');
           setError('');
           isReconnecting = false;
@@ -464,7 +509,12 @@ export default function VideoChat() {
         });
 
         peer.on('error', (err) => {
-          console.error('Peer connection error:', err);
+          console.error('Peer connection error:', {
+            error: err.message,
+            iceGatheringState: peer._pc.iceGatheringState,
+            connectionState: peer._pc.connectionState
+          });
+
           if (!isReconnecting && reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
             isReconnecting = true;
             resetConnectionTimeout();
@@ -475,7 +525,10 @@ export default function VideoChat() {
         });
 
         peer.on('close', () => {
-          console.log('Peer connection closed');
+          console.log('Peer connection closed:', {
+            iceGatheringState: peer._pc.iceGatheringState,
+            connectionState: peer._pc.connectionState
+          });
           if (connectionTimeout) window.clearTimeout(connectionTimeout);
           cleanupCall();
         });
@@ -494,81 +547,41 @@ export default function VideoChat() {
           
           setRemoteStream(incomingStream);
           
-          // Make sure we have a valid video element
           if (remoteVideoRef.current) {
             console.log('Setting remote video source');
             remoteVideoRef.current.srcObject = incomingStream;
             
-            // Play with fallback
-            const playPromise = remoteVideoRef.current.play();
-            if (playPromise !== undefined) {
-              playPromise
+            const playVideo = () => {
+              const videoElement = remoteVideoRef.current;
+              if (!videoElement) return;
+
+              videoElement.play()
                 .then(() => {
                   console.log('Remote video playing successfully');
                   setError('');
                 })
                 .catch(err => {
                   console.error('Error playing remote video:', err);
-                  // Try again with user interaction
+                  if (!videoElement || !videoElement.parentNode) return;
+
                   const playButton = document.createElement('button');
                   playButton.textContent = 'Click to enable video';
                   playButton.className = 'absolute inset-0 bg-black/80 text-white flex items-center justify-center';
                   playButton.onclick = () => {
-                    remoteVideoRef.current?.play();
-                    playButton.remove();
+                    if (videoElement) {
+                      videoElement.play()
+                        .then(() => playButton.remove())
+                        .catch(console.error);
+                    }
                   };
-                  if (remoteVideoRef.current.parentNode) {
-                    remoteVideoRef.current.parentNode.appendChild(playButton);
-                  }
+                  videoElement.parentNode.appendChild(playButton);
                 });
-            }
+            };
+            
+            playVideo();
           } else {
             console.error('Remote video ref is null');
             setError('Failed to display remote video');
-          }
-        });
-
-        // Add ICE connection state monitoring
-        peer.on('iceStateChange', (state) => {
-          console.log('ICE connection state changed:', {
-            state,
-            timestamp: new Date().toISOString(),
-            isReconnecting,
-            reconnectAttempts
-          });
-
-          switch (state) {
-            case 'checking':
-              setConnectionStatus(isReconnecting ? 'Reconnecting...' : 'Establishing connection...');
-              break;
-            case 'connected':
-            case 'completed':
-              setConnectionStatus('Connected to partner');
-              setError('');
-              isReconnecting = false;
-              reconnectAttempts = 0;
-              if (connectionTimeout) window.clearTimeout(connectionTimeout);
-              break;
-            case 'disconnected':
-              console.warn('ICE connection interrupted');
-              setConnectionStatus('Connection interrupted. Trying to reconnect...');
-              if (!isReconnecting) {
-                isReconnecting = true;
-                resetConnectionTimeout();
-              }
-              break;
-            case 'failed':
-              console.error('ICE connection failed');
-              if (reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
-                resetConnectionTimeout();
-              } else {
-                setError('Connection failed. Please try again.');
-                cleanupCall();
-              }
-              break;
-            case 'closed':
-              cleanupCall();
-              break;
           }
         });
       };
