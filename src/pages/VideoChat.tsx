@@ -65,14 +65,43 @@ export default function VideoChat() {
         console.log('Connecting to backend at:', backendUrl);
         
         // Ping the server first to wake it up if it's sleeping
-        try {
-          console.log('Pinging server to wake it up...');
-          const pingResponse = await fetch(`${backendUrl}/health`);
-          console.log('Server ping response:', pingResponse.status);
-        } catch (pingError) {
-          console.warn('Ping failed, server might be starting up:', pingError);
+        let serverAwake = false;
+        let retryCount = 0;
+        const maxRetries = 3;
+
+        while (!serverAwake && retryCount < maxRetries) {
+          try {
+            console.log(`Pinging server attempt ${retryCount + 1}...`);
+            const pingResponse = await fetch(`${backendUrl}/health`, {
+              method: 'GET',
+              headers: {
+                'Content-Type': 'application/json',
+              },
+              // Add a timeout to the fetch request
+              signal: AbortSignal.timeout(5000)
+            });
+            
+            if (pingResponse.ok) {
+              console.log('Server is awake and responding');
+              serverAwake = true;
+            } else {
+              throw new Error(`Server responded with status: ${pingResponse.status}`);
+            }
+          } catch (pingError) {
+            console.warn(`Ping attempt ${retryCount + 1} failed:`, pingError);
+            retryCount++;
+            if (retryCount < maxRetries) {
+              console.log('Waiting before retry...');
+              await new Promise(resolve => setTimeout(resolve, 2000)); // Wait 2 seconds before retry
+            }
+          }
+        }
+
+        if (!serverAwake) {
+          throw new Error('Unable to connect to server after multiple attempts');
         }
         
+        // Create socket connection with updated configuration
         socketRef.current = io(backendUrl, {
           auth: {
             token: session.access_token
@@ -81,12 +110,16 @@ export default function VideoChat() {
           reconnection: true,
           reconnectionDelay: 1000,
           reconnectionAttempts: 5,
-          forceNew: true
+          timeout: 10000,
+          forceNew: true,
+          query: {
+            userId: session.user.id // Add user ID to connection query
+          }
         });
 
-        // Add connection event handlers
+        // Enhanced connection event handlers
         socketRef.current.on('connect', () => {
-          console.log('Connected to server');
+          console.log('Connected to server with socket ID:', socketRef.current?.id);
           setIsConnected(true);
           setConnectionStatus('Connected to server');
           setError('');
@@ -96,14 +129,26 @@ export default function VideoChat() {
           console.error('Connection error:', err);
           setIsConnected(false);
           setConnectionStatus('Failed to connect to server');
-          setError('Failed to connect to server. Please try again.');
+          setError(`Failed to connect to server: ${err.message}. Please try again.`);
         });
 
-        socketRef.current.on('disconnect', () => {
-          console.log('Disconnected from server');
+        socketRef.current.on('disconnect', (reason) => {
+          console.log('Disconnected from server. Reason:', reason);
           setIsConnected(false);
           setConnectionStatus('Disconnected from server');
-          setError('Disconnected from server');
+          setError(`Disconnected from server: ${reason}`);
+
+          // Attempt to reconnect if disconnected due to network issues
+          if (reason === 'transport close' || reason === 'ping timeout') {
+            console.log('Attempting to reconnect...');
+            socketRef.current?.connect();
+          }
+        });
+
+        // Add error event handler
+        socketRef.current.on('error', (error) => {
+          console.error('Socket error:', error);
+          setError(`Socket error: ${error.message}`);
         });
 
         // Handle match found event
@@ -120,10 +165,41 @@ export default function VideoChat() {
             partnerId,
             roomId
           });
+
+          // Ensure we have a local stream before creating peer connection
+          if (!localStream) {
+            try {
+              console.log('No local stream in matchFound, attempting to initialize...');
+              await initializeMedia();
+            } catch (err) {
+              setError('Failed to access camera after match. Please refresh and try again.');
+              return;
+            }
+          }
           
           setCallStartTime(new Date());
           setCurrentPartnerId(partnerId);
-          initializePeer(isInitiator, partnerId);
+          
+          // Initialize peer with retry logic
+          let retryCount = 0;
+          const maxRetries = 3;
+          
+          const attemptPeerConnection = async () => {
+            try {
+              await initializePeer(isInitiator, partnerId);
+            } catch (err) {
+              console.error('Peer connection failed:', err);
+              if (retryCount < maxRetries) {
+                retryCount++;
+                console.log(`Retrying peer connection, attempt ${retryCount}...`);
+                setTimeout(attemptPeerConnection, 1000);
+              } else {
+                setError('Failed to establish connection with peer. Please try again.');
+              }
+            }
+          };
+          
+          await attemptPeerConnection();
         });
 
         // Handle partner disconnection
@@ -139,7 +215,7 @@ export default function VideoChat() {
 
       } catch (error) {
         console.error('Socket initialization error:', error);
-        setError('Failed to initialize connection. Please try again.');
+        setError(`Failed to initialize connection: ${error instanceof Error ? error.message : 'Unknown error'}. Please try again.`);
       }
     };
 
@@ -325,11 +401,9 @@ export default function VideoChat() {
     }
   };
 
-  const initializePeer = (isInitiator: boolean, partnerId: string) => {
+  const initializePeer = async (isInitiator: boolean, partnerId: string) => {
     if (!localStream) {
-      console.error('No local stream available');
-      setError('No local stream available');
-      return;
+      throw new Error('No local stream available for peer connection');
     }
 
     console.log('Initializing peer connection:', { isInitiator, partnerId });
@@ -340,24 +414,31 @@ export default function VideoChat() {
         peerRef.current.destroy();
       }
 
-      peerRef.current = new Peer({
+      const peerOptions = {
         initiator: isInitiator,
         stream: localStream,
         trickle: false,
         config: {
           iceServers: [
             { urls: 'stun:stun.l.google.com:19302' },
-            { urls: 'stun:global.stun.twilio.com:3478' }
+            { urls: 'stun:global.stun.twilio.com:3478' },
+            {
+              urls: 'turn:global.turn.twilio.com:3478',
+              username: 'your_username',  // Replace with your TURN server credentials
+              credential: 'your_credential'
+            }
           ]
         }
-      });
+      };
+
+      peerRef.current = new Peer(peerOptions);
 
       // When we have a signal to send
       peerRef.current.on('signal', signal => {
         console.log('Sending signal to partner:', partnerId);
         socketRef.current?.emit('signal', {
           signal,
-          to: partnerId  // Send to partner's ID
+          to: partnerId
         });
       });
 
@@ -372,11 +453,12 @@ export default function VideoChat() {
 
       peerRef.current.on('error', (err) => {
         console.error('Peer error:', err);
-        setError('Connection error occurred');
+        setError('Connection error occurred. Please try again.');
       });
 
       peerRef.current.on('connect', () => {
-        console.log('Peer connection established');
+        console.log('Peer connection established successfully');
+        setError(''); // Clear any existing errors
       });
 
       peerRef.current.on('close', () => {
@@ -391,25 +473,36 @@ export default function VideoChat() {
       socketRef.current?.on('signal', ({ signal, from }) => {
         if (from === partnerId) {  // Only accept signals from our partner
           console.log('Received signal from partner:', from);
-          peerRef.current?.signal(signal);
+          try {
+            peerRef.current?.signal(signal);
+          } catch (err) {
+            console.error('Error processing signal:', err);
+            setError('Failed to process connection signal. Please try again.');
+          }
         }
       });
 
     } catch (err) {
       console.error('Error creating peer:', err);
-      setError('Failed to create peer connection');
+      throw new Error('Failed to create peer connection');
     }
   };
 
-  const handleFindMatch = () => {
+  const handleFindMatch = async () => {
     if (!isConnected) {
       setError('Not connected to server. Please wait or refresh the page.');
       return;
     }
 
+    // Ensure we have a local stream before finding a match
     if (!localStream) {
-      setError('No camera/microphone access. Please grant permission and try again.');
-      return;
+      try {
+        console.log('No local stream, attempting to initialize...');
+        await initializeMedia();
+      } catch (err) {
+        setError('Failed to access camera. Please check camera permissions and try again.');
+        return;
+      }
     }
 
     console.log('Finding match...');
