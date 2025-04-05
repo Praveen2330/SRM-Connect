@@ -205,99 +205,68 @@ export default function VideoChat() {
     };
   }, []);
 
-  // Socket connection setup
+  // Initialize socket connection
   useEffect(() => {
     const initializeSocket = async () => {
       try {
-        console.log('Initializing socket connection...');
         const { data: { session } } = await supabase.auth.getSession();
-        if (!session?.access_token) {
-          console.error('No access token available');
-          setError('Please log in to use video chat');
+        if (!session) {
+          console.error('No session found');
+          setError('Please sign in to use video chat');
           return;
         }
 
-        const backendUrl = import.meta.env.VITE_BACKEND_URL;
-        console.log('Connecting to backend at:', backendUrl);
-
-        // Try to ping the server first
-        try {
-          console.log('Pinging server attempt 1...');
-          const response = await fetch(`${backendUrl}/health`, {
-            mode: 'cors',
-            credentials: 'include',
-            headers: {
-              'Accept': 'application/json',
-              'Content-Type': 'application/json'
-            }
-          });
-          
-          if (response.ok) {
-            const data = await response.json();
-            console.log('Server health check response:', data);
-          } else {
-            console.error('Server health check failed:', response.status);
-            throw new Error(`Server health check failed: ${response.status}`);
-          }
-        } catch (error) {
-          console.error('Server ping failed:', error);
-          setError('Unable to connect to video chat server. Please check your connection and try again.');
-          return;
-        }
-
-        // Initialize socket connection with retry logic
-        const socket = io(backendUrl, {
+        const socket = io(import.meta.env.VITE_BACKEND_URL, {
           auth: {
             token: session.access_token
           },
-          query: {
-            userId: session.user.id
-          },
-          transports: ['websocket', 'polling'],
+          transports: ['websocket'],
           reconnection: true,
           reconnectionAttempts: 5,
-          reconnectionDelay: 1000,
-          reconnectionDelayMax: 5000,
-          timeout: 20000,
-          withCredentials: true,
-          forceNew: true,
-          extraHeaders: {
-            'Access-Control-Allow-Origin': window.location.origin
-          }
+          reconnectionDelay: 1000
         });
 
         socket.on('connect', () => {
-          console.log('Socket connected successfully');
-          setConnectionStatus('Connected to server');
-          setIsConnected(true);
+          console.log('Socket connected:', socket.id);
           setError('');
         });
 
         socket.on('connect_error', (error) => {
           console.error('Socket connection error:', error);
-          setError(`Connection error: ${error.message}. Please try refreshing the page.`);
-          setIsConnected(false);
+          setError('Connection error. Please try again.');
         });
 
-        socket.on('disconnect', (reason) => {
-          console.log('Socket disconnected:', reason);
-          setConnectionStatus(`Disconnected: ${reason}. Attempting to reconnect...`);
-          setIsConnected(false);
-          
-          // Handle specific disconnect reasons
-          if (reason === 'io server disconnect') {
-            // Server disconnected us, try to reconnect
-            socket.connect();
-          } else if (reason === 'transport close') {
-            // Connection lost, will automatically try to reconnect
-            setError('Connection lost. Attempting to reconnect...');
-          }
+        socket.on('error', (error) => {
+          console.error('Socket error:', error);
+          setError(error.message || 'An error occurred');
         });
 
         socketRef.current = socket;
 
         // Handle match found event
         socket.on('matchFound', handleMatchFound);
+
+        // Handle chat messages
+        socket.on('chatMessage', (message) => {
+          console.log('Received chat message:', message);
+          setMessages(prev => [...prev, message]);
+          if (chatContainerRef.current) {
+            chatContainerRef.current.scrollTop = chatContainerRef.current.scrollHeight;
+          }
+        });
+
+        // Handle likes
+        socket.on('like', () => {
+          console.log('Received like');
+          setLikes(prev => prev + 1);
+        });
+
+        // Handle partner disconnection
+        socket.on('partnerDisconnected', () => {
+          console.log('Partner disconnected');
+          setError('Partner disconnected');
+          cleanupCall();
+        });
 
       } catch (error) {
         console.error('Socket initialization error:', error);
@@ -308,6 +277,7 @@ export default function VideoChat() {
     initializeSocket();
 
     return () => {
+      cleanupCall();
       if (socketRef.current) {
         console.log('Cleaning up socket connection...');
         socketRef.current.disconnect();
@@ -330,6 +300,10 @@ export default function VideoChat() {
 
       if (!mediaStream) {
         throw new Error('Failed to initialize media stream');
+      }
+
+      if (!socketRef.current) {
+        throw new Error('Socket connection not available');
       }
 
       // Initialize WebRTC connection
@@ -400,7 +374,7 @@ export default function VideoChat() {
       });
 
       // Handle incoming signals with validation
-      socket.on('signal', ({ from, signal, roomId: incomingRoomId }) => {
+      socketRef.current.on('signal', ({ from, signal, roomId: incomingRoomId }) => {
         console.log('Received signal:', { 
           from, 
           type: signal.type,
@@ -505,25 +479,28 @@ export default function VideoChat() {
   };
 
   // Handle find match click
-  const handleFindMatch = useCallback(async () => {
-    if (!localStream || !socketRef.current) {
-      setError('Please allow camera access first');
+  const handleFindMatch = async () => {
+    if (!socketRef.current) {
+      setError('Connection not available');
       return;
     }
 
     try {
-      setIsSearching(true);
-      setConnectionStatus('Looking for a match...');
       setError('');
-
+      setConnectionStatus('Looking for a match...');
+      setIsSearching(true);
+      
+      // Initialize media before finding match
+      await initializeMedia();
+      
       console.log('Emitting findMatch event');
       socketRef.current.emit('findMatch');
     } catch (error) {
       console.error('Error in handleFindMatch:', error);
-      setError('Failed to start match search. Please try again.');
+      setError('Failed to start matching. Please try again.');
       setIsSearching(false);
     }
-  }, [localStream, socketRef]);
+  };
 
   // Cleanup function
   const cleanupCall = useCallback(() => {
@@ -544,6 +521,9 @@ export default function VideoChat() {
       socketRef.current.off('connect');
       socketRef.current.off('error');
       socketRef.current.off('close');
+      socketRef.current.off('chatMessage');
+      socketRef.current.off('like');
+      socketRef.current.off('partnerDisconnected');
     }
 
     // Stop remote stream
@@ -568,141 +548,82 @@ export default function VideoChat() {
     setMessages([]);
     setLikes(0);
     setHasLiked(false);
+    setIsSearching(false);
   }, [remoteStream]);
 
   // Handle end call
-  const handleEndCall = useCallback(async () => {
-    console.log('Ending call');
-    
-    // Store activity data if we have a partner and call start time
-    if (socketRef.current && currentPartnerId) {
-      // Notify server and partner
-      socketRef.current.emit('endCall', { 
-        partnerId: currentPartnerId 
+  const handleEndCall = async () => {
+    if (!socketRef.current || !currentPartnerId || !roomId) {
+      console.log('Cannot end call:', {
+        hasSocket: !!socketRef.current,
+        partnerId: currentPartnerId,
+        roomId
       });
-
-      // Store call activity in database
-      if (callStartTime) {
-        const endTime = new Date();
-        const duration = Math.floor((endTime.getTime() - callStartTime.getTime()) / 1000); // duration in seconds
-        
-        try {
-          const { data: { session } } = await supabase.auth.getSession();
-          if (session?.user) {
-            // Store activity in Supabase
-            const { error } = await supabase
-              .from('recent_activities')
-              .insert({
-                user_id: session.user.id,
-                partner_id: currentPartnerId,
-                activity_type: 'video_call',
-                duration,
-                likes_received: likes,
-                messages_exchanged: messages.length,
-                created_at: callStartTime.toISOString(),
-                ended_at: endTime.toISOString()
-              });
-
-            if (error) {
-              console.error('Failed to store activity:', error);
-            }
-          }
-        } catch (error) {
-          console.error('Error storing activity:', error);
-        }
-      }
+      return;
     }
-    
-    // Clean up the call
-    cleanupCall();
 
-    // Navigate to dashboard after a short delay to allow cleanup
-    setTimeout(() => {
+    try {
+      console.log('Ending call with:', currentPartnerId);
+      socketRef.current.emit('endCall', {
+        to: currentPartnerId,
+        roomId
+      });
+      
+      cleanupCall();
       navigate('/dashboard');
-    }, 500);
-  }, [currentPartnerId, callStartTime, likes, messages.length, cleanupCall, navigate]);
+    } catch (error) {
+      console.error('Error ending call:', error);
+      setError('Failed to end call properly');
+    }
+  };
 
-  // Handle partner disconnection
-  useEffect(() => {
-    if (!socketRef.current) return;
-
-    socketRef.current.on('partnerDisconnected', () => {
-      console.log('Partner disconnected');
-      setError('Your partner has disconnected');
-      handleEndCall();
-    });
-
-    return () => {
-      socketRef.current?.off('partnerDisconnected');
-    };
-  }, [handleEndCall]);
-
+  // Handle chat message send
   const handleSendMessage = () => {
-    if (!newMessage.trim() || !socketRef.current) return;
+    if (!socketRef.current || !newMessage.trim() || !currentPartnerId || !roomId) {
+      console.log('Cannot send message:', {
+        hasSocket: !!socketRef.current,
+        message: newMessage,
+        partnerId: currentPartnerId,
+        roomId
+      });
+      return;
+    }
 
-    const message: Message = {
-      id: Date.now().toString(),
-      content: newMessage,
-      timestamp: new Date(),
-      from: 'You'
+    const messageData = {
+      text: newMessage.trim(),
+      to: currentPartnerId,
+      roomId
     };
 
-    setMessages(prev => [...prev, message]);
-    
-    // Use the correct partner ID instead of channelName
-    socketRef.current.emit('chatMessage', {
-      to: currentPartnerId,
-      content: newMessage
-    });
-    
+    console.log('Sending message:', messageData);
+    socketRef.current.emit('chatMessage', messageData);
+    setMessages(prev => [...prev, { ...messageData, fromSelf: true }]);
     setNewMessage('');
 
-    // Scroll to bottom of chat
     if (chatContainerRef.current) {
       chatContainerRef.current.scrollTop = chatContainerRef.current.scrollHeight;
     }
   };
 
+  // Handle like button click
   const handleLike = () => {
-    if (!hasLiked && socketRef.current) {
-      setLikes(prev => prev + 1);
-      setHasLiked(true);
-      
-      // Use the correct partner ID instead of channelName
-      socketRef.current.emit('like', {
-        to: currentPartnerId
+    if (!socketRef.current || !currentPartnerId || !roomId || hasLiked) {
+      console.log('Cannot send like:', {
+        hasSocket: !!socketRef.current,
+        partnerId: currentPartnerId,
+        roomId,
+        hasLiked
       });
+      return;
     }
+
+    console.log('Sending like to:', currentPartnerId);
+    socketRef.current.emit('like', {
+      to: currentPartnerId,
+      roomId
+    });
+    setHasLiked(true);
   };
-
-  // Add socket listeners for chat and likes
-  useEffect(() => {
-    if (!socketRef.current) return;
-
-    socketRef.current.on('chatMessage', ({ content, from }: ChatMessage) => {
-      const message: Message = {
-        id: Date.now().toString(),
-        content,
-        from: 'Partner',
-        timestamp: new Date()
-      };
-      setMessages(prev => [...prev, message]);
-
-      // Scroll to bottom of chat
-      if (chatContainerRef.current) {
-        chatContainerRef.current.scrollTop = chatContainerRef.current.scrollHeight;
-      }
-    });
-
-    socketRef.current.on('like', () => {
-      setLikes(prev => prev + 1);
-    });
-
-    return () => {
-      socketRef.current?.off('chatMessage');
-      socketRef.current?.off('like');
-    };
-  }, []);
 
   return (
     <div className="min-h-screen bg-black text-white relative">
