@@ -171,7 +171,7 @@ export default function VideoChat() {
         
         // First check if media devices are supported
         if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-          throw new Error('Media devices not supported in this browser');
+          throw new Error('Your browser does not support video chat. Please try a different browser.');
         }
 
         // List available devices to debug
@@ -183,48 +183,81 @@ export default function VideoChat() {
         console.log('Available audio devices:', audioDevices.length);
 
         if (videoDevices.length === 0) {
-          throw new Error('No video devices found. Please connect a camera.');
+          throw new Error('No camera found. Please connect a camera and refresh the page.');
         }
 
-        // Request permissions with specific constraints
-        const stream = await navigator.mediaDevices.getUserMedia({ 
-          video: {
-            width: { ideal: 1280 },
-            height: { ideal: 720 },
-            facingMode: 'user'
-          }, 
-          audio: {
-            echoCancellation: true,
-            noiseSuppression: true
+        // Try to get media stream with retries
+        let retryCount = 0;
+        const maxRetries = 3;
+        let lastError;
+
+        while (retryCount < maxRetries) {
+          try {
+            const stream = await navigator.mediaDevices.getUserMedia({ 
+              video: {
+                width: { ideal: 1280 },
+                height: { ideal: 720 },
+                facingMode: 'user'
+              }, 
+              audio: {
+                echoCancellation: true,
+                noiseSuppression: true
+              }
+            });
+
+            console.log('Got local media stream');
+            
+            // Check if we actually got video tracks
+            const videoTrack = stream.getVideoTracks()[0];
+            if (!videoTrack) {
+              throw new Error('Failed to get video track');
+            }
+
+            console.log('Video track settings:', videoTrack.getSettings());
+
+            setLocalStream(stream);
+            if (localVideoRef.current) {
+              localVideoRef.current.srcObject = stream;
+            }
+
+            // Clear any previous errors
+            setError('');
+            return;
+          } catch (err) {
+            lastError = err;
+            retryCount++;
+            console.log(`Attempt ${retryCount} failed, retrying...`);
+            await new Promise(resolve => setTimeout(resolve, 1000)); // Wait 1 second before retrying
           }
-        });
-
-        console.log('Got local media stream');
-        
-        // Check if we actually got video tracks
-        const videoTrack = stream.getVideoTracks()[0];
-        if (!videoTrack) {
-          throw new Error('Failed to get video track');
         }
 
-        console.log('Video track settings:', videoTrack.getSettings());
-
-        setLocalStream(stream);
-        if (localVideoRef.current) {
-          localVideoRef.current.srcObject = stream;
-        }
-
-        // Clear any previous errors
-        setError('');
+        // If we get here, all retries failed
+        throw lastError;
       } catch (err) {
         console.error('Failed to get user media:', err);
         if (err instanceof Error) {
           if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError') {
-            setError('Camera access denied. Please grant permission in your browser settings.');
+            setError('Camera access denied. Please grant permission in your browser settings and refresh the page.');
           } else if (err.name === 'NotFoundError' || err.name === 'DevicesNotFoundError') {
             setError('No camera found. Please connect a camera and refresh the page.');
           } else if (err.name === 'NotReadableError' || err.name === 'TrackStartError') {
             setError('Camera is in use by another application. Please close other apps using the camera.');
+          } else if (err.name === 'OverconstrainedError') {
+            setError('Your camera does not support the required resolution. Trying with lower quality...');
+            // Try again with lower constraints
+            try {
+              const stream = await navigator.mediaDevices.getUserMedia({ 
+                video: true, 
+                audio: true 
+              });
+              setLocalStream(stream);
+              if (localVideoRef.current) {
+                localVideoRef.current.srcObject = stream;
+              }
+              setError('');
+            } catch (fallbackErr) {
+              setError('Failed to access camera with lower quality settings.');
+            }
           } else {
             setError(`Failed to access camera: ${err.message}`);
           }
