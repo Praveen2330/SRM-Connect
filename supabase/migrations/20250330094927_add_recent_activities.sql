@@ -42,5 +42,4 @@ create trigger update_recent_activities_updated_at
 
 -- Grant necessary permissions
 grant usage on schema public to authenticated;
-grant all on recent_activities to authenticated;
-grant usage, select on sequence recent_activities_id_seq to authenticated; 
+grant all on recent_activities to authenticated; 

@@ -23,19 +23,57 @@ function Dashboard() {
   useEffect(() => {
     const fetchActivities = async () => {
       try {
-        const { data: activitiesData } = await supabase
-          .from('recent_activities')
-          .select('activities')
-          .single();
+        const { data: { user } } = await supabase.auth.getUser();
+        if (!user) {
+          console.error('No authenticated user found');
+          return;
+        }
 
-        if (activitiesData?.activities) {
-          setActivities(activitiesData.activities.map((activity: RecentActivity & { timestamp: string }) => ({
+        // First, try to get the existing record
+        let { data, error } = await supabase
+          .from('recent_activities')
+          .select('*')
+          .eq('user_id', user.id)
+          .maybeSingle();
+
+        if (error) {
+          console.error('Error fetching activities:', error);
+          
+          // If no record exists, create one
+          if (error.code === 'PGRST116') {
+            const { data: newData, error: insertError } = await supabase
+              .from('recent_activities')
+              .insert([
+                { 
+                  user_id: user.id,
+                  activities: []
+                }
+              ])
+              .select('*')
+              .single();
+
+            if (insertError) {
+              console.error('Error creating activities record:', insertError);
+              return;
+            }
+            
+            data = newData;
+          } else {
+            return;
+          }
+        }
+
+        if (data?.activities) {
+          const parsedActivities = Array.isArray(data.activities) ? data.activities : [];
+          setActivities(parsedActivities.map((activity: RecentActivity & { timestamp: string }) => ({
             ...activity,
             timestamp: new Date(activity.timestamp)
           })));
+        } else {
+          setActivities([]);
         }
       } catch (error) {
-        console.error('Error fetching activities:', error);
+        console.error('Error in fetchActivities:', error);
       } finally {
         setLoading(false);
       }

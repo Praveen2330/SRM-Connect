@@ -31,16 +31,7 @@ console.log('Allowed origins for CORS:', allowedOrigins);
 
 // Configure CORS
 app.use(cors({
-  origin: function(origin, callback) {
-    // Allow requests with no origin (like mobile apps, curl, etc.)
-    if (!origin) return callback(null, true);
-    
-    if (allowedOrigins.indexOf(origin) === -1) {
-      var msg = 'The CORS policy for this site does not allow access from the specified origin.';
-      return callback(new Error(msg), false);
-    }
-    return callback(null, true);
-  },
+  origin: allowedOrigins,
   methods: ['GET', 'POST'],
   credentials: true
 }));
@@ -69,7 +60,8 @@ const io = new Server(server, {
     credentials: true
   },
   pingTimeout: 60000,
-  pingInterval: 25000
+  pingInterval: 25000,
+  transports: ['websocket', 'polling']
 });
 
 // Store active users and their socket IDs
@@ -146,198 +138,143 @@ async function broadcastActiveUsers() {
 }
 
 // Socket.IO connection handling
-io.on('connection', async (socket) => {
-  try {
-    if (!socket.user) {
-      console.error('No user data in socket');
-      socket.disconnect();
+io.on('connection', (socket) => {
+  console.log('New socket connection:', socket.id);
+
+  if (!socket.user) {
+    console.error('No user data in socket');
+    socket.disconnect();
+    return;
+  }
+
+  const userId = socket.user.id;
+  console.log('User connected:', userId);
+
+  // Store user's socket connection
+  activeUsers.set(userId, socket.id);
+
+  // Handle find match request
+  socket.on('findMatch', async () => {
+    console.log('Find match request from:', userId);
+    
+    if (waitingUsers.has(userId)) {
+      console.log('User already in waiting list:', userId);
       return;
     }
 
-    const userId = socket.user.id;
-    console.log('User connected:', { socketId: socket.id, userId });
+    // Add user to waiting list
+    waitingUsers.add(userId);
+    console.log('Added to waiting list:', userId);
+    console.log('Current waiting users:', waitingUsers.size);
 
-    // Store user connection
-    activeUsers.set(userId, socket.id);
+    // Try to find a match
+    for (const potentialMatchId of waitingUsers) {
+      if (potentialMatchId !== userId) {
+        // Found a match
+        waitingUsers.delete(userId);
+        waitingUsers.delete(potentialMatchId);
 
-    // Update user's online status
-    try {
-      const { error: statusError } = await supabase
-        .from('profiles')
-        .update({ 
-          is_online: true,
-          last_seen: new Date().toISOString()
-        })
-        .eq('id', userId);
+        const roomId = `room_${Date.now()}`;
+        activeMatches.set(roomId, { user1: userId, user2: potentialMatchId });
 
-      if (statusError) {
-        console.error('Error updating online status:', statusError);
+        const user1Socket = io.sockets.sockets.get(activeUsers.get(userId));
+        const user2Socket = io.sockets.sockets.get(activeUsers.get(potentialMatchId));
+
+        if (user1Socket && user2Socket) {
+          user1Socket.join(roomId);
+          user2Socket.join(roomId);
+
+          user1Socket.emit('matchFound', { roomId, partnerId: potentialMatchId, isInitiator: true });
+          user2Socket.emit('matchFound', { roomId, partnerId: userId, isInitiator: false });
+
+          console.log('Match created:', { roomId, user1: userId, user2: potentialMatchId });
+        }
+        break;
       }
-    } catch (error) {
-      console.error('Error updating online status:', error);
     }
+  });
 
-    // Handle find match request
-    socket.on('findMatch', async () => {
-      console.log('User looking for match:', { socketId: socket.id, userId });
+  // Handle WebRTC signaling
+  socket.on('signal', ({ to, signal }) => {
+    const toSocket = io.sockets.sockets.get(activeUsers.get(to));
+    if (toSocket) {
+      toSocket.emit('signal', { from: userId, signal });
+    }
+  });
 
-      // Remove user from waiting list if they were waiting
-      waitingUsers.delete(userId);
+  // Handle message sending
+  socket.on('message', async (data) => {
+    try {
+      const { content, receiver_id, type = 'text', media_url, auto_delete_after_read = false } = data;
+      
+      console.log('Processing message:', {
+        sender: userId,
+        receiver: receiver_id,
+        type,
+        content: content.substring(0, 50) // Log first 50 chars only
+      });
 
-      // If there's someone waiting, create a match
-      if (waitingUsers.size > 0) {
-        // Find a waiting user that isn't the current user
-        const waitingUser = Array.from(waitingUsers).find(id => id !== userId);
-        
-        if (waitingUser) {
-          waitingUsers.delete(waitingUser);
-
-          // Get socket IDs for both users
-          const user1SocketId = activeUsers.get(userId);
-          const user2SocketId = activeUsers.get(waitingUser);
-
-          if (!user1SocketId || !user2SocketId) {
-            console.error('Could not find socket IDs for users:', { userId, waitingUser });
-            return;
-          }
-
-          // Create a unique room ID using user IDs
-          const roomId = `${userId}-${waitingUser}`;
-          
-          // Store the match using user IDs
-          activeMatches.set(userId, waitingUser);
-          activeMatches.set(waitingUser, userId);
-
-          // Notify both users with the room ID
-          io.to(user1SocketId).emit('matchFound', { 
-            roomId,
-            partnerId: waitingUser
-          });
-          
-          io.to(user2SocketId).emit('matchFound', { 
-            roomId,
-            partnerId: userId
-          });
-
-          console.log('Match created:', {
-            roomId,
-            user1: userId,
-            user2: waitingUser
-          });
-        }
-      } else {
-        // Add user to waiting list
-        waitingUsers.add(userId);
-        console.log('User added to waiting list:', userId);
-      }
-    });
-
-    // Handle WebRTC signaling
-    socket.on('signal', ({ signal, to }) => {
-      const partnerSocketId = activeUsers.get(to);
-      if (partnerSocketId) {
-        console.log('Forwarding signal from', userId, 'to', to);
-        io.to(partnerSocketId).emit('signal', {
-          signal,
-          from: userId
-        });
-      }
-    });
-
-    // Handle message sending
-    socket.on('message', async (data) => {
-      try {
-        const { content, receiver_id, type = 'text', media_url, auto_delete_after_read = false } = data;
-        
-        console.log('Processing message:', {
-          sender: userId,
-          receiver: receiver_id,
+      // Save message to database
+      const { data: message, error: dbError } = await supabase
+        .from('messages')
+        .insert({
+          sender_id: userId,
+          receiver_id,
+          content,
           type,
-          content: content.substring(0, 50) // Log first 50 chars only
-        });
+          media_url,
+          read: false,
+          auto_delete_after_read,
+          created_at: new Date().toISOString()
+        })
+        .select()
+        .single();
 
-        // Save message to database
-        const { data: message, error: dbError } = await supabase
-          .from('messages')
-          .insert({
-            sender_id: userId,
-            receiver_id,
-            content,
-            type,
-            media_url,
-            read: false,
-            auto_delete_after_read,
-            created_at: new Date().toISOString()
-          })
-          .select()
-          .single();
-
-        if (dbError) {
-          console.error('Database error:', dbError);
-          socket.emit('messageError', { error: 'Failed to save message: ' + dbError.message });
-          return;
-        }
-
-        // Send to recipient if online
-        const recipientSocket = activeUsers.get(receiver_id);
-        if (recipientSocket) {
-          io.to(recipientSocket).emit('newMessage', message);
-        }
-
-        // Confirm to sender
-        socket.emit('messageSent', message);
-      } catch (error) {
-        console.error('Message handling error:', error);
-        socket.emit('messageError', { error: error.message });
+      if (dbError) {
+        console.error('Database error:', dbError);
+        socket.emit('messageError', { error: 'Failed to save message: ' + dbError.message });
+        return;
       }
-    });
 
-    // Handle disconnection
-    socket.on('disconnect', async () => {
-      console.log('User disconnected:', { socketId: socket.id, userId });
-      
-      // Remove from active users
-      activeUsers.delete(userId);
-      
-      // Remove from waiting list
-      waitingUsers.delete(userId);
-      
-      // Update online status
-      try {
-        const { error: statusError } = await supabase
-          .from('profiles')
-          .update({ 
-            is_online: false,
-            last_seen: new Date().toISOString()
-          })
-          .eq('id', userId);
-
-        if (statusError) {
-          console.error('Error updating offline status:', statusError);
-        }
-      } catch (error) {
-        console.error('Error updating offline status:', error);
+      // Send to recipient if online
+      const recipientSocket = activeUsers.get(receiver_id);
+      if (recipientSocket) {
+        io.to(recipientSocket).emit('newMessage', message);
       }
-      
-      // If they were in a match, notify their partner
-      const partnerId = activeMatches.get(userId);
-      if (partnerId) {
-        const partnerSocketId = activeUsers.get(partnerId);
-        if (partnerSocketId) {
-          console.log('Notifying partner of disconnection:', partnerId);
-          io.to(partnerSocketId).emit('partnerDisconnected');
+
+      // Confirm to sender
+      socket.emit('messageSent', message);
+    } catch (error) {
+      console.error('Message handling error:', error);
+      socket.emit('messageError', { error: error.message });
+    }
+  });
+
+  // Handle disconnection
+  socket.on('disconnect', () => {
+    console.log('User disconnected:', userId);
+    
+    // Remove from active users
+    activeUsers.delete(userId);
+    
+    // Remove from waiting list
+    waitingUsers.delete(userId);
+    
+    // Notify partner if in active match
+    for (const [roomId, match] of activeMatches.entries()) {
+      if (match.user1 === userId || match.user2 === userId) {
+        const partnerId = match.user1 === userId ? match.user2 : match.user1;
+        const partnerSocket = io.sockets.sockets.get(activeUsers.get(partnerId));
+        
+        if (partnerSocket) {
+          partnerSocket.emit('partnerDisconnected');
         }
         
-        // Clean up the match
-        activeMatches.delete(userId);
-        activeMatches.delete(partnerId);
+        activeMatches.delete(roomId);
+        break;
       }
-    });
-
-  } catch (error) {
-    console.error('Socket connection error:', error);
-    socket.disconnect();
-  }
+    }
+  });
 });
 
 // Start the server

@@ -50,194 +50,86 @@ export default function VideoChat() {
   useEffect(() => {
     const initializeSocket = async () => {
       try {
+        console.log('Initializing socket connection...');
         const { data: { session } } = await supabase.auth.getSession();
         if (!session?.access_token) {
           console.error('No access token available');
-          navigate('/login');
+          setError('Please log in to use video chat');
           return;
         }
 
-        console.log('Initializing socket connection...');
-        setConnectionStatus('Connecting to server...');
-        
-        // Initialize socket connection with proper configuration
         const backendUrl = import.meta.env.VITE_BACKEND_URL || 'http://localhost:3000';
         console.log('Connecting to backend at:', backendUrl);
-        
-        // Ping the server first to wake it up if it's sleeping
-        let serverAwake = false;
-        let retryCount = 0;
-        const maxRetries = 3;
 
-        while (!serverAwake && retryCount < maxRetries) {
+        // Try to ping the server first
+        let serverResponding = false;
+        for (let i = 1; i <= 3; i++) {
           try {
-            console.log(`Pinging server attempt ${retryCount + 1}...`);
-            const pingResponse = await fetch(`${backendUrl}/health`, {
-              method: 'GET',
-              headers: {
-                'Content-Type': 'application/json',
-              },
-              // Add a timeout to the fetch request
-              signal: AbortSignal.timeout(5000)
+            console.log(`Pinging server attempt ${i}...`);
+            const response = await fetch(`${backendUrl}/health`, {
+              signal: AbortSignal.timeout(5000) // 5 second timeout
             });
-            
-            if (pingResponse.ok) {
+            if (response.ok) {
               console.log('Server is awake and responding');
-              serverAwake = true;
-            } else {
-              throw new Error(`Server responded with status: ${pingResponse.status}`);
+              serverResponding = true;
+              break;
             }
-          } catch (pingError) {
-            console.warn(`Ping attempt ${retryCount + 1} failed:`, pingError);
-            retryCount++;
-            if (retryCount < maxRetries) {
-              console.log('Waiting before retry...');
-              await new Promise(resolve => setTimeout(resolve, 2000)); // Wait 2 seconds before retry
-            }
+          } catch (error) {
+            console.warn(`Ping attempt ${i} failed:`, error);
+            await new Promise(resolve => setTimeout(resolve, 2000)); // Wait 2 seconds between attempts
           }
         }
 
-        if (!serverAwake) {
-          throw new Error('Unable to connect to server after multiple attempts');
+        if (!serverResponding) {
+          setError('Unable to connect to video chat server. Please try again later.');
+          return;
         }
-        
-        // Create socket connection with updated configuration
-        socketRef.current = io(backendUrl, {
+
+        // Initialize socket connection with retry logic
+        const socket = io(backendUrl, {
           auth: {
             token: session.access_token
           },
           transports: ['websocket', 'polling'],
           reconnection: true,
+          reconnectionAttempts: 3,
           reconnectionDelay: 1000,
-          reconnectionAttempts: 5,
-          timeout: 10000,
-          forceNew: true,
-          query: {
-            userId: session.user.id // Add user ID to connection query
+          reconnectionDelayMax: 5000,
+          timeout: 10000
+        });
+
+        socket.on('connect', () => {
+          console.log('Socket connected successfully');
+          setConnectionStatus('connected');
+        });
+
+        socket.on('connect_error', (error) => {
+          console.error('Socket connection error:', error);
+          setError('Failed to connect to video chat server. Please try again.');
+        });
+
+        socket.on('disconnect', (reason) => {
+          console.log('Socket disconnected:', reason);
+          setConnectionStatus('disconnected');
+          if (reason === 'io server disconnect') {
+            // Server disconnected us, try to reconnect
+            socket.connect();
           }
         });
 
-        // Enhanced connection event handlers
-        socketRef.current.on('connect', () => {
-          console.log('Connected to server with socket ID:', socketRef.current?.id);
-          setIsConnected(true);
-          setConnectionStatus('Connected to server');
-          setError('');
-        });
-
-        socketRef.current.on('connect_error', (err) => {
-          console.error('Connection error:', err);
-          setIsConnected(false);
-          setConnectionStatus('Failed to connect to server');
-          setError(`Failed to connect to server: ${err.message}. Please try again.`);
-        });
-
-        socketRef.current.on('disconnect', (reason) => {
-          console.log('Disconnected from server. Reason:', reason);
-          setIsConnected(false);
-          setConnectionStatus('Disconnected from server');
-          setError(`Disconnected from server: ${reason}`);
-
-          // Attempt to reconnect if disconnected due to network issues
-          if (reason === 'transport close' || reason === 'ping timeout') {
-            console.log('Attempting to reconnect...');
-            socketRef.current?.connect();
-          }
-        });
-
-        // Add error event handler
-        socketRef.current.on('error', (error) => {
-          console.error('Socket error:', error);
-          setError(`Socket error: ${error.message}`);
-        });
-
-        // Handle match found event
-        socketRef.current.on('matchFound', async ({ roomId, partnerId }) => {
-          console.log('Match found!', { roomId, partnerId });
-          setIsMatching(false);
-          const [user1Id] = roomId.split('-');
-          const { data: { user } } = await supabase.auth.getUser();
-          const isInitiator = user?.id === user1Id;
-          
-          console.log('Match details:', {
-            isInitiator,
-            myId: user?.id,
-            partnerId,
-            roomId
-          });
-
-          // Ensure we have a local stream before creating peer connection
-          if (!localStream) {
-            try {
-              console.log('No local stream in matchFound, attempting to initialize...');
-              await initializeMedia();
-            } catch (err) {
-              setError('Failed to access camera after match. Please refresh and try again.');
-              return;
-            }
-          }
-          
-          setCallStartTime(new Date());
-          setCurrentPartnerId(partnerId);
-          
-          // Initialize peer with retry logic
-          let retryCount = 0;
-          const maxRetries = 3;
-          
-          const attemptPeerConnection = async () => {
-            try {
-              await initializePeer(isInitiator, partnerId);
-            } catch (err) {
-              console.error('Peer connection failed:', err);
-              if (retryCount < maxRetries) {
-                retryCount++;
-                console.log(`Retrying peer connection, attempt ${retryCount}...`);
-                setTimeout(attemptPeerConnection, 1000);
-              } else {
-                setError('Failed to establish connection with peer. Please try again.');
-              }
-            }
-          };
-          
-          await attemptPeerConnection();
-        });
-
-        // Handle partner disconnection
-        socketRef.current.on('partnerDisconnected', () => {
-          console.log('Partner disconnected');
-          if (remoteStream) {
-            remoteStream.getTracks().forEach(track => track.stop());
-            setRemoteStream(null);
-          }
-          peerRef.current?.destroy();
-          setError('Your partner has disconnected');
-        });
-
+        socketRef.current = socket;
+        return () => {
+          console.log('Cleaning up socket connection...');
+          socket.disconnect();
+        };
       } catch (error) {
         console.error('Socket initialization error:', error);
-        setError(`Failed to initialize connection: ${error instanceof Error ? error.message : 'Unknown error'}. Please try again.`);
+        setError('Failed to initialize video chat. Please try again.');
       }
     };
 
     initializeSocket();
-    
-    // Set up a ping interval to keep the server awake
-    const pingInterval = setInterval(() => {
-      if (socketRef.current?.connected) {
-        console.log('Sending keep-alive ping');
-        socketRef.current.emit('ping');
-      }
-    }, 60000); // ping every minute
-
-    // Cleanup function
-    return () => {
-      console.log('Cleaning up VideoChat component...');
-      clearInterval(pingInterval);
-      stopAllMediaTracks();
-      socketRef.current?.disconnect();
-      peerRef.current?.destroy();
-    };
-  }, [navigate]);
+  }, []);
 
   // Separate useEffect for media initialization
   useEffect(() => {
