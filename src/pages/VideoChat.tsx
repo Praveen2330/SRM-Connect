@@ -240,17 +240,24 @@ export default function VideoChat() {
         try {
           console.log('Pinging server attempt 1...');
           const response = await fetch(`${backendUrl}/health`, {
-            credentials: 'include'
+            mode: 'cors',
+            credentials: 'include',
+            headers: {
+              'Accept': 'application/json',
+              'Content-Type': 'application/json'
+            }
           });
+          
           if (response.ok) {
-            console.log('Server is awake and responding');
+            const data = await response.json();
+            console.log('Server health check response:', data);
           } else {
             console.error('Server health check failed:', response.status);
-            throw new Error('Server health check failed');
+            throw new Error(`Server health check failed: ${response.status}`);
           }
         } catch (error) {
           console.error('Server ping failed:', error);
-          setError('Unable to connect to video chat server. Please try again later.');
+          setError('Unable to connect to video chat server. Please check your connection and try again.');
           return;
         }
 
@@ -264,12 +271,15 @@ export default function VideoChat() {
           },
           transports: ['websocket', 'polling'],
           reconnection: true,
-          reconnectionAttempts: 3,
+          reconnectionAttempts: 5,
           reconnectionDelay: 1000,
           reconnectionDelayMax: 5000,
-          timeout: 10000,
+          timeout: 20000,
           withCredentials: true,
-          forceNew: true
+          forceNew: true,
+          extraHeaders: {
+            'Access-Control-Allow-Origin': window.location.origin
+          }
         });
 
         socket.on('connect', () => {
@@ -281,17 +291,22 @@ export default function VideoChat() {
 
         socket.on('connect_error', (error) => {
           console.error('Socket connection error:', error);
-          setError(`Failed to connect to video chat server: ${error.message}`);
+          setError(`Connection error: ${error.message}. Please try refreshing the page.`);
           setIsConnected(false);
         });
 
         socket.on('disconnect', (reason) => {
           console.log('Socket disconnected:', reason);
-          setConnectionStatus(`Disconnected from server: ${reason}`);
+          setConnectionStatus(`Disconnected: ${reason}. Attempting to reconnect...`);
           setIsConnected(false);
+          
+          // Handle specific disconnect reasons
           if (reason === 'io server disconnect') {
             // Server disconnected us, try to reconnect
             socket.connect();
+          } else if (reason === 'transport close') {
+            // Connection lost, will automatically try to reconnect
+            setError('Connection lost. Attempting to reconnect...');
           }
         });
 

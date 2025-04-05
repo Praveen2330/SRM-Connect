@@ -25,7 +25,8 @@ const allowedOrigins = [
   'http://localhost:5173',
   'https://srm-connect.vercel.app',
   'https://srm-connect-git-main-praveen2330.vercel.app',
-  'https://srm-connect-praveen2330.vercel.app'
+  'https://srm-connect-praveen2330.vercel.app',
+  'https://srm-connect-nine.vercel.app'  // Add your actual production URL
 ];
 
 console.log('Allowed origins for CORS:', allowedOrigins);
@@ -33,26 +34,57 @@ console.log('Allowed origins for CORS:', allowedOrigins);
 // Configure CORS
 const corsOptions = {
   origin: function (origin, callback) {
-    console.log('Request origin:', origin);
-    if (!origin || allowedOrigins.indexOf(origin) !== -1) {
+    console.log('Incoming request from origin:', origin);
+    
+    // Allow requests with no origin (like mobile apps or curl requests)
+    if (!origin) {
+      console.log('Allowing request with no origin');
+      return callback(null, true);
+    }
+    
+    if (allowedOrigins.indexOf(origin) !== -1) {
+      console.log('Origin allowed:', origin);
       callback(null, true);
     } else {
       console.error('Origin not allowed:', origin);
       callback(new Error('Not allowed by CORS'));
     }
   },
-  methods: ['GET', 'POST'],
+  methods: ['GET', 'POST', 'OPTIONS'],
   credentials: true,
-  optionsSuccessStatus: 200
+  optionsSuccessStatus: 200,
+  allowedHeaders: ['Content-Type', 'Authorization', 'x-requested-with']
 };
 
+// Apply CORS middleware
 app.use(cors(corsOptions));
+
+// Add OPTIONS handling for preflight requests
+app.options('*', cors(corsOptions));
 
 app.use(express.json());
 
 // Add a health check route
 app.get('/health', (req, res) => {
-  res.status(200).json({ status: 'ok', message: 'Server is healthy' });
+  try {
+    console.log('Health check request from:', req.get('origin'));
+    res.status(200).json({ 
+      status: 'ok', 
+      message: 'Server is healthy',
+      timestamp: new Date().toISOString(),
+      cors: {
+        origin: req.get('origin'),
+        allowedOrigins
+      }
+    });
+  } catch (error) {
+    console.error('Health check error:', error);
+    res.status(500).json({ 
+      status: 'error', 
+      message: 'Internal server error',
+      timestamp: new Date().toISOString()
+    });
+  }
 });
 
 // Root route
@@ -69,7 +101,8 @@ const io = new Server(server, {
   cors: {
     origin: allowedOrigins,
     methods: ['GET', 'POST'],
-    credentials: true
+    credentials: true,
+    allowedHeaders: ['Content-Type', 'Authorization']
   },
   pingTimeout: 60000,
   pingInterval: 25000,
