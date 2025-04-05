@@ -74,9 +74,9 @@ const io = new Server(server, {
 
 // Store active users and their socket IDs
 const activeUsers = new Map();
-// Store waiting users
-let waitingUsers = new Set();
-// Store active matches
+// Store waiting users with their user IDs
+const waitingUsers = new Set();
+// Store active matches with user IDs
 const activeMatches = new Map();
 
 // Socket.IO middleware for authentication
@@ -148,58 +148,100 @@ async function broadcastActiveUsers() {
 // Socket.IO connection handling
 io.on('connection', async (socket) => {
   try {
-    console.log('User connected:', socket.id);
-    console.log('Authenticated user:', socket.user.id);
+    if (!socket.user) {
+      console.error('No user data in socket');
+      socket.disconnect();
+      return;
+    }
+
+    const userId = socket.user.id;
+    console.log('User connected:', { socketId: socket.id, userId });
 
     // Store user connection
-    activeUsers.set(socket.user.id, socket.id);
+    activeUsers.set(userId, socket.id);
 
     // Update user's online status
-    const statusUpdated = await updateUserOnlineStatus(socket.user.id, true);
-    if (statusUpdated) {
-      console.log('Updated online status for user:', socket.user.id);
-      await broadcastActiveUsers();
+    try {
+      const { error: statusError } = await supabase
+        .from('profiles')
+        .update({ 
+          is_online: true,
+          last_seen: new Date().toISOString()
+        })
+        .eq('id', userId);
+
+      if (statusError) {
+        console.error('Error updating online status:', statusError);
+      }
+    } catch (error) {
+      console.error('Error updating online status:', error);
     }
 
     // Handle find match request
-    socket.on('findMatch', () => {
-      console.log('User looking for match:', socket.id);
+    socket.on('findMatch', async () => {
+      console.log('User looking for match:', { socketId: socket.id, userId });
 
-      // If user was already waiting, remove them
-      waitingUsers.delete(socket.id);
+      // Remove user from waiting list if they were waiting
+      waitingUsers.delete(userId);
 
       // If there's someone waiting, create a match
       if (waitingUsers.size > 0) {
-        const iterator = waitingUsers.values();
-        const partnerId = iterator.next().value;
-        waitingUsers.delete(partnerId);
-
-        // Create a unique room ID
-        const roomId = `${socket.id}-${partnerId}`;
+        // Find a waiting user that isn't the current user
+        const waitingUser = Array.from(waitingUsers).find(id => id !== userId);
         
-        // Store the match
-        activeMatches.set(socket.id, partnerId);
-        activeMatches.set(partnerId, socket.id);
+        if (waitingUser) {
+          waitingUsers.delete(waitingUser);
 
-        // Notify both users
-        io.to(socket.id).emit('matchFound', { roomId });
-        io.to(partnerId).emit('matchFound', { roomId });
+          // Get socket IDs for both users
+          const user1SocketId = activeUsers.get(userId);
+          const user2SocketId = activeUsers.get(waitingUser);
 
-        console.log('Match created:', roomId);
+          if (!user1SocketId || !user2SocketId) {
+            console.error('Could not find socket IDs for users:', { userId, waitingUser });
+            return;
+          }
+
+          // Create a unique room ID using user IDs
+          const roomId = `${userId}-${waitingUser}`;
+          
+          // Store the match using user IDs
+          activeMatches.set(userId, waitingUser);
+          activeMatches.set(waitingUser, userId);
+
+          // Notify both users with the room ID
+          io.to(user1SocketId).emit('matchFound', { 
+            roomId,
+            partnerId: waitingUser
+          });
+          
+          io.to(user2SocketId).emit('matchFound', { 
+            roomId,
+            partnerId: userId
+          });
+
+          console.log('Match created:', {
+            roomId,
+            user1: userId,
+            user2: waitingUser
+          });
+        }
       } else {
         // Add user to waiting list
-        waitingUsers.add(socket.id);
-        console.log('User added to waiting list:', socket.id);
+        waitingUsers.add(userId);
+        console.log('User added to waiting list:', userId);
       }
     });
 
     // Handle WebRTC signaling
     socket.on('signal', ({ signal, to }) => {
-      console.log('Forwarding signal from', socket.id, 'to', to);
-      io.to(to).emit('signal', {
-        signal,
-        from: socket.id
-      });
+      const partnerSocketId = activeUsers.get(to);
+      if (partnerSocketId) {
+        console.log('Forwarding signal from', userId, 'to', to);
+        io.to(partnerSocketId).emit('signal', {
+          signal,
+          from: userId
+        });
+      }
     });
 
     // Handle message sending
@@ -208,7 +250,7 @@ io.on('connection', async (socket) => {
         const { content, receiver_id, type = 'text', media_url, auto_delete_after_read = false } = data;
         
         console.log('Processing message:', {
-          sender: socket.user.id,
+          sender: userId,
           receiver: receiver_id,
           type,
           content: content.substring(0, 50) // Log first 50 chars only
@@ -218,7 +260,7 @@ io.on('connection', async (socket) => {
         const { data: message, error: dbError } = await supabase
           .from('messages')
           .insert({
-            sender_id: socket.user.id,
+            sender_id: userId,
             receiver_id,
             content,
             type,
@@ -251,32 +293,44 @@ io.on('connection', async (socket) => {
     });
 
     // Handle disconnection
-    socket.on('disconnect', async (reason) => {
-      console.log('User disconnected:', socket.id, 'Reason:', reason);
+    socket.on('disconnect', async () => {
+      console.log('User disconnected:', { socketId: socket.id, userId });
       
-      if (socket.user?.id) {
-        activeUsers.delete(socket.user.id);
+      // Remove from active users
+      activeUsers.delete(userId);
+      
+      // Remove from waiting list
+      waitingUsers.delete(userId);
+      
+      // Update online status
+      try {
+        const { error: statusError } = await supabase
+          .from('profiles')
+          .update({ 
+            is_online: false,
+            last_seen: new Date().toISOString()
+          })
+          .eq('id', userId);
 
-        // Update user's online status
-        const statusUpdated = await updateUserOnlineStatus(socket.user.id, false);
-        if (statusUpdated) {
-          console.log('Updated offline status for user:', socket.user.id);
-          await broadcastActiveUsers();
+        if (statusError) {
+          console.error('Error updating offline status:', statusError);
         }
-
-        // Remove from waiting list if they were waiting
-        waitingUsers.delete(socket.id);
-        
-        // If they were in a match, notify their partner
-        const partnerId = activeMatches.get(socket.id);
-        if (partnerId) {
+      } catch (error) {
+        console.error('Error updating offline status:', error);
+      }
+      
+      // If they were in a match, notify their partner
+      const partnerId = activeMatches.get(userId);
+      if (partnerId) {
+        const partnerSocketId = activeUsers.get(partnerId);
+        if (partnerSocketId) {
           console.log('Notifying partner of disconnection:', partnerId);
-          io.to(partnerId).emit('partnerDisconnected');
-          
-          // Clean up the match
-          activeMatches.delete(socket.id);
-          activeMatches.delete(partnerId);
+          io.to(partnerSocketId).emit('partnerDisconnected');
         }
+        
+        // Clean up the match
+        activeMatches.delete(userId);
+        activeMatches.delete(partnerId);
       }
     });
 

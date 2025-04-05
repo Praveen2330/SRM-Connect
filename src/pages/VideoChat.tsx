@@ -9,8 +9,8 @@ import { RecentActivity } from '../types/activity';
 interface Message {
   id: string;
   content: string;
-  from: string;
   timestamp: Date;
+  from: 'You' | 'Partner';
 }
 
 export default function VideoChat() {
@@ -58,7 +58,6 @@ export default function VideoChat() {
         }
 
         console.log('Initializing socket connection...');
-        console.log('Auth token available:', !!session.access_token);
         setConnectionStatus('Connecting to server...');
         
         // Initialize socket connection with proper configuration
@@ -87,7 +86,7 @@ export default function VideoChat() {
 
         // Add connection event handlers
         socketRef.current.on('connect', () => {
-          console.log('Connected to server with ID:', socketRef.current?.id);
+          console.log('Connected to server');
           setIsConnected(true);
           setConnectionStatus('Connected to server');
           setError('');
@@ -95,7 +94,6 @@ export default function VideoChat() {
 
         socketRef.current.on('connect_error', (err) => {
           console.error('Connection error:', err);
-          console.error('Connection error details:', err.message);
           setIsConnected(false);
           setConnectionStatus('Failed to connect to server');
           setError('Failed to connect to server. Please try again.');
@@ -108,6 +106,26 @@ export default function VideoChat() {
           setError('Disconnected from server');
         });
 
+        // Handle match found event
+        socketRef.current.on('matchFound', async ({ roomId, partnerId }) => {
+          console.log('Match found!', { roomId, partnerId });
+          setIsMatching(false);
+          const [user1Id] = roomId.split('-');
+          const { data: { user } } = await supabase.auth.getUser();
+          const isInitiator = user?.id === user1Id;
+          
+          console.log('Match details:', {
+            isInitiator,
+            myId: user?.id,
+            partnerId,
+            roomId
+          });
+          
+          setCallStartTime(new Date());
+          setCurrentPartnerId(partnerId);
+          initializePeer(isInitiator, partnerId);
+        });
+
         // Handle partner disconnection
         socketRef.current.on('partnerDisconnected', () => {
           console.log('Partner disconnected');
@@ -118,6 +136,7 @@ export default function VideoChat() {
           peerRef.current?.destroy();
           setError('Your partner has disconnected');
         });
+
       } catch (error) {
         console.error('Socket initialization error:', error);
         setError('Failed to initialize connection. Please try again.');
@@ -148,18 +167,70 @@ export default function VideoChat() {
   useEffect(() => {
     const initializeMedia = async () => {
       try {
+        console.log('Requesting media permissions...');
+        
+        // First check if media devices are supported
+        if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+          throw new Error('Media devices not supported in this browser');
+        }
+
+        // List available devices to debug
+        const devices = await navigator.mediaDevices.enumerateDevices();
+        const videoDevices = devices.filter(device => device.kind === 'videoinput');
+        const audioDevices = devices.filter(device => device.kind === 'audioinput');
+        
+        console.log('Available video devices:', videoDevices.length);
+        console.log('Available audio devices:', audioDevices.length);
+
+        if (videoDevices.length === 0) {
+          throw new Error('No video devices found. Please connect a camera.');
+        }
+
+        // Request permissions with specific constraints
         const stream = await navigator.mediaDevices.getUserMedia({ 
-          video: true, 
-          audio: true 
+          video: {
+            width: { ideal: 1280 },
+            height: { ideal: 720 },
+            facingMode: 'user'
+          }, 
+          audio: {
+            echoCancellation: true,
+            noiseSuppression: true
+          }
         });
+
         console.log('Got local media stream');
+        
+        // Check if we actually got video tracks
+        const videoTrack = stream.getVideoTracks()[0];
+        if (!videoTrack) {
+          throw new Error('Failed to get video track');
+        }
+
+        console.log('Video track settings:', videoTrack.getSettings());
+
         setLocalStream(stream);
         if (localVideoRef.current) {
           localVideoRef.current.srcObject = stream;
         }
+
+        // Clear any previous errors
+        setError('');
       } catch (err) {
         console.error('Failed to get user media:', err);
-        setError('Failed to access camera and microphone. Please ensure you have granted permission.');
+        if (err instanceof Error) {
+          if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError') {
+            setError('Camera access denied. Please grant permission in your browser settings.');
+          } else if (err.name === 'NotFoundError' || err.name === 'DevicesNotFoundError') {
+            setError('No camera found. Please connect a camera and refresh the page.');
+          } else if (err.name === 'NotReadableError' || err.name === 'TrackStartError') {
+            setError('Camera is in use by another application. Please close other apps using the camera.');
+          } else {
+            setError(`Failed to access camera: ${err.message}`);
+          }
+        } else {
+          setError('Failed to access camera and microphone. Please ensure you have granted permission.');
+        }
       }
     };
 
@@ -320,27 +391,6 @@ export default function VideoChat() {
     
     console.log('Emitting findMatch event to server...');
     socketRef.current?.emit('findMatch');
-
-    // Log event listeners
-    console.log('Setting up matchFound listener...');
-    socketRef.current?.once('matchFound', ({ roomId }) => {
-      console.log('Match found! Room ID:', roomId);
-      setIsMatching(false);
-      const [initiatorId, partnerId] = roomId.split('-');
-      const isInitiator = socketRef.current?.id === initiatorId;
-      const partnerSocketId = isInitiator ? partnerId : initiatorId;
-      
-      console.log('Match details:', {
-        isInitiator,
-        myId: socketRef.current?.id,
-        partnerId: partnerSocketId,
-        roomId
-      });
-      
-      setCallStartTime(new Date());
-      setCurrentPartnerId(partnerSocketId);
-      initializePeer(isInitiator, partnerSocketId);
-    });
   };
 
   const handleEndCall = async () => {
@@ -485,8 +535,8 @@ export default function VideoChat() {
     const message: Message = {
       id: Date.now().toString(),
       content: newMessage,
-      from: 'You',
-      timestamp: new Date()
+      timestamp: new Date(),
+      from: 'You'
     };
 
     setMessages(prev => [...prev, message]);
@@ -548,10 +598,10 @@ export default function VideoChat() {
 
   return (
     <div className="min-h-screen bg-black text-white relative">
-      {/* Connection status bar */}
+      {/* Connection status banner */}
       <div className={`fixed top-0 left-0 right-0 p-2 text-center text-white ${
-        isConnected ? 'bg-green-500' : 'bg-yellow-500'
-      }`}>
+        isConnected ? 'bg-green-500' : 'bg-red-500'
+      } transition-colors duration-300`}>
         {connectionStatus}
       </div>
 
@@ -571,11 +621,19 @@ export default function VideoChat() {
               autoPlay
               playsInline
               muted
-              className="w-full rounded-lg bg-zinc-900"
+              className="w-full h-[360px] rounded-lg bg-zinc-900 object-cover"
             />
             <div className="absolute bottom-2 left-2 bg-black/50 px-2 py-1 rounded">
               You
             </div>
+            {!localStream && (
+              <div className="absolute inset-0 flex items-center justify-center bg-zinc-900/90 rounded-lg">
+                <div className="text-center p-4">
+                  <div className="animate-spin rounded-full h-8 w-8 border-2 border-blue-500 border-t-transparent mx-auto mb-2"></div>
+                  <p>Initializing camera...</p>
+                </div>
+              </div>
+            )}
           </div>
 
           {/* Remote video */}
@@ -584,13 +642,32 @@ export default function VideoChat() {
               ref={remoteVideoRef}
               autoPlay
               playsInline
-              className="w-full rounded-lg bg-zinc-900"
+              className="w-full h-[360px] rounded-lg bg-zinc-900 object-cover"
             />
             <div className="absolute bottom-2 left-2 bg-black/50 px-2 py-1 rounded">
               Partner
             </div>
           </div>
         </div>
+
+        {/* Find match button */}
+        {!isMatching && !remoteStream && (
+          <button
+            onClick={handleFindMatch}
+            disabled={!isConnected || !localStream}
+            className={`px-6 py-3 rounded-full text-lg font-semibold mb-4 ${
+              isConnected && localStream
+                ? 'bg-blue-600 hover:bg-blue-700 transition-colors'
+                : 'bg-gray-600 cursor-not-allowed'
+            }`}
+          >
+            {!isConnected 
+              ? 'Connecting...' 
+              : !localStream 
+                ? 'Waiting for camera...'
+                : 'Find Match'}
+          </button>
+        )}
 
         {/* Controls */}
         <div className="flex gap-4 mb-8">
