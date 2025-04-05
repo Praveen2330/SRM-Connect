@@ -336,7 +336,7 @@ export default function VideoChat() {
         throw new Error('Socket connection not available');
       }
 
-      // Initialize WebRTC connection
+      // Initialize WebRTC connection with improved configuration
       const peer = new Peer({
         initiator: isInitiator,
         trickle: true,
@@ -348,6 +348,9 @@ export default function VideoChat() {
           iceServers: [
             { urls: 'stun:stun.l.google.com:19302' },
             { urls: 'stun:stun1.l.google.com:19302' },
+            { urls: 'stun:stun2.l.google.com:19302' },
+            { urls: 'stun:stun3.l.google.com:19302' },
+            { urls: 'stun:stun4.l.google.com:19302' },
             { 
               urls: [
                 'turn:openrelay.metered.ca:80',
@@ -358,6 +361,11 @@ export default function VideoChat() {
               credential: 'openrelayproject',
             }
           ]
+        },
+        sdpTransform: (sdp) => {
+          // Ensure we're using UDP and TCP candidates
+          sdp = sdp.replace(/a=ice-options:trickle\r\n/g, 'a=ice-options:trickle renomination\r\n');
+          return sdp;
         }
       });
 
@@ -378,7 +386,22 @@ export default function VideoChat() {
       setCallStartTime(new Date());
       setError('');
 
-      // Handle peer signals with better error handling
+      // Connection timeout handler
+      let connectionTimeout: NodeJS.Timeout;
+      const resetConnectionTimeout = () => {
+        if (connectionTimeout) clearTimeout(connectionTimeout);
+        connectionTimeout = setTimeout(() => {
+          console.error('Connection timeout - destroying peer');
+          peer.destroy();
+          setError('Connection timeout. Please try again.');
+          setConnectionStatus('Connection failed');
+        }, 30000); // 30 seconds timeout
+      };
+
+      // Set initial timeout
+      resetConnectionTimeout();
+
+      // Handle peer signals
       peer.on('signal', (signal) => {
         console.log('Generated signal:', {
           type: signal.type,
@@ -403,7 +426,7 @@ export default function VideoChat() {
         }
       });
 
-      // Handle incoming signals with validation
+      // Handle incoming signals
       socketRef.current.on('signal', ({ from, signal, roomId: incomingRoomId }) => {
         console.log('Received signal:', { 
           from, 
@@ -419,6 +442,8 @@ export default function VideoChat() {
             }
             peer.signal(signal);
             console.log('Successfully applied signal');
+            // Reset timeout on successful signal
+            resetConnectionTimeout();
           } catch (error) {
             console.error('Error applying signal:', error);
             setError('Failed to establish peer connection. Please try again.');
@@ -428,7 +453,7 @@ export default function VideoChat() {
         }
       });
 
-      // Handle stream with validation
+      // Handle stream
       peer.on('stream', (incomingStream: MediaStream) => {
         console.log('Received remote stream:', {
           audioTracks: incomingStream.getAudioTracks().length,
@@ -440,21 +465,38 @@ export default function VideoChat() {
         setRemoteStream(incomingStream);
         if (remoteVideoRef.current) {
           remoteVideoRef.current.srcObject = incomingStream;
-          remoteVideoRef.current.play().catch(err => {
-            console.error('Error playing remote video:', err);
-            setError('Failed to play remote video. Please check permissions.');
-          });
+          // Clear any previous timeout
+          if (connectionTimeout) clearTimeout(connectionTimeout);
+          
+          // Add play handler with retries
+          const playVideo = async (retryCount = 0) => {
+            try {
+              await remoteVideoRef.current?.play();
+              console.log('Remote video playing successfully');
+            } catch (err) {
+              console.error('Error playing remote video:', err);
+              if (retryCount < 3) {
+                console.log(`Retrying video play (attempt ${retryCount + 1}/3)...`);
+                setTimeout(() => playVideo(retryCount + 1), 1000);
+              } else {
+                setError('Failed to play remote video. Please check permissions.');
+              }
+            }
+          };
+          
+          playVideo();
         } else {
           console.error('Remote video ref not available');
           setError('Failed to display remote video');
         }
       });
 
-      // Handle ICE connection state changes with more detailed logging
+      // Handle ICE connection state changes
       peer.on('iceStateChange', (state) => {
+        const timestamp = new Date().toISOString();
         console.log('ICE connection state changed:', {
           state,
-          timestamp: new Date().toISOString(),
+          timestamp,
           hasRemoteStream: !!remoteStream,
           hasLocalStream: !!localStream
         });
@@ -462,25 +504,30 @@ export default function VideoChat() {
         switch (state) {
           case 'checking':
             setConnectionStatus('Establishing connection...');
+            resetConnectionTimeout();
             break;
           case 'connected':
             setConnectionStatus('Connected to partner');
             setError('');
+            if (connectionTimeout) clearTimeout(connectionTimeout);
             break;
           case 'completed':
             setConnectionStatus('Connection established');
+            if (connectionTimeout) clearTimeout(connectionTimeout);
             break;
           case 'disconnected':
-            setConnectionStatus('Connection interrupted. Trying to reconnect...');
             console.warn('ICE connection interrupted');
+            setConnectionStatus('Connection interrupted. Trying to reconnect...');
+            resetConnectionTimeout();
             break;
           case 'failed':
             console.error('ICE connection failed');
             setError('Connection failed. Please try again.');
+            if (connectionTimeout) clearTimeout(connectionTimeout);
             cleanupCall();
             break;
           case 'closed':
-            console.log('ICE connection closed');
+            if (connectionTimeout) clearTimeout(connectionTimeout);
             cleanupCall();
             break;
         }
@@ -490,12 +537,14 @@ export default function VideoChat() {
       peer.on('error', (err) => {
         console.error('Peer connection error:', err);
         setError(`Connection error: ${err.message}. Please try again.`);
+        if (connectionTimeout) clearTimeout(connectionTimeout);
         cleanupCall();
       });
 
       // Handle peer close
       peer.on('close', () => {
         console.log('Peer connection closed');
+        if (connectionTimeout) clearTimeout(connectionTimeout);
         cleanupCall();
       });
 
