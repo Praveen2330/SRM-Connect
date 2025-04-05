@@ -508,6 +508,11 @@ export default function VideoChat() {
 
       // Set up all peer event listeners
       const setupPeerListeners = (peer: ExtendedPeer) => {
+        if (!peer || !peer._pc) {
+          console.error('Invalid peer or peer connection');
+          return;
+        }
+
         // Track ICE gathering state
         const gatheredCandidates = {
           host: 0,
@@ -516,78 +521,94 @@ export default function VideoChat() {
         };
 
         peer._pc.onicecandidate = (event) => {
+          if (!peer._pc || peer.destroyed) {
+            console.warn('Peer connection no longer valid during ICE candidate gathering');
+            return;
+          }
+
           if (event.candidate) {
             const candidate = event.candidate;
-            gatheredCandidates[candidate.type as keyof typeof gatheredCandidates]++;
-            
-            console.log('ICE candidate:', {
-              type: candidate.type,
-              protocol: candidate.protocol,
-              address: candidate.address,
-              port: candidate.port,
-              counts: { ...gatheredCandidates }
-            });
+            if (candidate.type) {  // Add null check for candidate type
+              gatheredCandidates[candidate.type as keyof typeof gatheredCandidates]++;
+              
+              console.log('ICE candidate:', {
+                type: candidate.type,
+                protocol: candidate.protocol,
+                address: candidate.address,
+                port: candidate.port,
+                counts: { ...gatheredCandidates }
+              });
+            }
           } else {
             console.log('ICE gathering complete. Final candidates:', gatheredCandidates);
           }
         };
 
         peer._pc.onicegatheringstatechange = () => {
-          const state = peer._pc.iceGatheringState;
-          console.log('ICE gathering state changed:', {
-            state,
-            candidates: { ...gatheredCandidates },
-            timestamp: new Date().toISOString()
-          });
+          if (!peer._pc || peer.destroyed) {
+            console.warn('Peer connection no longer valid during ICE gathering state change');
+            return;
+          }
 
-          if (state === 'complete') {
-            // Check if we have enough candidates
-            const hasEnoughCandidates = 
-              gatheredCandidates.host > 0 || 
-              gatheredCandidates.srflx > 0 || 
-              gatheredCandidates.relay > 0;
+          try {
+            const state = peer._pc.iceGatheringState;
+            console.log('ICE gathering state changed:', {
+              state,
+              candidates: { ...gatheredCandidates },
+              timestamp: new Date().toISOString()
+            });
 
-            if (!hasEnoughCandidates) {
-              console.warn('No usable ICE candidates found - connection may fail');
-              setError('Connection issue: No valid network paths found');
+            if (state === 'complete') {
+              // Check if we have enough candidates
+              const hasEnoughCandidates = 
+                gatheredCandidates.host > 0 || 
+                gatheredCandidates.srflx > 0 || 
+                gatheredCandidates.relay > 0;
+
+              if (!hasEnoughCandidates) {
+                console.warn('No usable ICE candidates found - connection may fail');
+                setError('Connection issue: No valid network paths found');
+              }
             }
+          } catch (error) {
+            console.warn('Error accessing ICE gathering state:', error);
           }
         };
 
         // Monitor connection state
         peer._pc.onconnectionstatechange = () => {
-          const state = peer._pc.connectionState;
-          console.log('Connection state changed:', state);
-          
-          if (state === 'failed' || state === 'disconnected') {
-            if (!isReconnecting && reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
-              console.log('Connection state indicates failure, attempting reconnect');
-              isReconnecting = true;
-              resetConnectionTimeout();
+          if (!peer._pc || peer.destroyed) {
+            console.warn('Peer connection no longer valid during connection state change');
+            return;
+          }
+
+          try {
+            const state = peer._pc.connectionState;
+            console.log('Connection state changed:', state);
+            
+            if (state === 'failed' || state === 'disconnected') {
+              if (!isReconnecting && reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
+                console.log('Connection state indicates failure, attempting reconnect');
+                isReconnecting = true;
+                resetConnectionTimeout();
+              }
             }
+          } catch (error) {
+            console.warn('Error accessing connection state:', error);
           }
         };
 
+        // Handle peer signals
         peer.on('signal', (signal) => {
-          console.log('Generated signal:', {
-            type: signal.type,
-            isReconnecting,
-            timestamp: new Date().toISOString(),
-            iceGatheringState: peer._pc.iceGatheringState,
-            connectionState: peer._pc.connectionState
-          });
-
-          if (!socketRef.current) {
-            console.error('Socket not available when trying to send signal');
+          if (!socketRef.current || !currentPartnerId) {
+            console.warn('Socket or partner ID not available for signaling');
             return;
           }
 
           try {
             socketRef.current.emit('signal', {
-              to: partnerId,
               signal,
-              roomId,
-              isReconnecting
+              targetUserId: currentPartnerId
             });
           } catch (error) {
             console.error('Error sending signal:', error);
