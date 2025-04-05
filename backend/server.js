@@ -198,7 +198,7 @@ io.on('connection', (socket) => {
   // Store user's socket connection
   activeUsers.set(userId, socket.id);
 
-  // Handle find match request
+  // Handle find match request with improved logging
   socket.on('findMatch', async () => {
     const userId = socket.user.id;
     console.log('\n=== Find Match Request ===');
@@ -327,37 +327,62 @@ io.on('connection', (socket) => {
   });
 
   // Handle WebRTC signaling
-  socket.on('signal', ({ to, signal, roomId }) => {
-    console.log('Received signal:', { from: userId, to, roomId });
-    
-    // Verify the users are in the same room
-    const match = activeMatches.get(roomId);
-    if (!match) {
+  socket.on('signal', async ({ to, signal, roomId }) => {
+    console.log('Received signal:', {
+      from: socket.userId,
+      to,
+      roomId,
+      signalType: signal.type
+    });
+
+    // Verify both users are in the same room
+    const room = activeMatches.get(roomId);
+    if (!room) {
       console.error('Room not found:', roomId);
+      socket.emit('error', { message: 'Invalid room' });
       return;
     }
 
-    if (match.user1 !== userId && match.user2 !== userId) {
-      console.error('User not in room:', userId);
-      return;
-    }
-
-    if (match.user1 !== to && match.user2 !== to) {
-      console.error('Target user not in room:', to);
-      return;
-    }
-
-    const toSocketId = activeUsers.get(to);
-    if (toSocketId) {
-      console.log('Forwarding signal to:', toSocketId);
-      io.to(toSocketId).emit('signal', { 
-        from: userId, 
-        signal,
-        roomId 
+    if (!room.user1 === socket.userId || !room.user2 === to) {
+      console.error('Unauthorized signal attempt:', {
+        room: room,
+        from: socket.userId,
+        to
       });
-    } else {
-      console.error('Target socket not found:', to);
+      socket.emit('error', { message: 'Unauthorized' });
+      return;
     }
+
+    // Get target socket
+    const targetSocket = io.sockets.sockets.get(activeUsers.get(to));
+    if (!targetSocket) {
+      console.error('Target user not found:', to);
+      socket.emit('error', { message: 'User disconnected' });
+      
+      // Clean up the match
+      activeMatches.delete(roomId);
+      
+      // Update match status in database
+      try {
+        await supabase
+          .from('matches')
+          .update({ 
+            status: 'disconnected',
+            disconnect_reason: 'Partner disconnected during signaling'
+          })
+          .eq('room_id', roomId);
+      } catch (error) {
+        console.error('Error updating match status:', error);
+      }
+      return;
+    }
+
+    console.log('Forwarding signal to:', to);
+    targetSocket.emit('signal', {
+      from: socket.userId,
+      signal,
+      roomId
+    });
   });
 
   // Handle message sending
@@ -408,8 +433,63 @@ io.on('connection', (socket) => {
     }
   });
 
-  // Handle disconnection
-  socket.on('disconnect', () => {
+  // Handle end call
+  socket.on('endCall', async ({ partnerId }) => {
+    console.log('End call request:', { from: userId, to: partnerId });
+    
+    // Find the room for this pair
+    let roomToEnd = null;
+    for (const [roomId, match] of activeMatches.entries()) {
+      if ((match.user1 === userId && match.user2 === partnerId) ||
+          (match.user1 === partnerId && match.user2 === userId)) {
+        roomToEnd = roomId;
+        break;
+      }
+    }
+
+    if (roomToEnd) {
+      console.log('Ending call in room:', roomToEnd);
+      
+      // Get partner's socket
+      const partnerSocket = io.sockets.sockets.get(activeUsers.get(partnerId));
+      if (partnerSocket) {
+        partnerSocket.emit('callEnded', { 
+          by: userId,
+          roomId: roomToEnd
+        });
+      }
+
+      // Update match status in database
+      try {
+        const { error } = await supabase
+          .from('matches')
+          .update({ 
+            status: 'ended',
+            ended_at: new Date().toISOString(),
+            ended_by: userId
+          })
+          .eq('room_id', roomToEnd);
+
+        if (error) {
+          console.error('Error updating match status:', error);
+        }
+      } catch (error) {
+        console.error('Database error:', error);
+      }
+
+      // Clean up the room
+      activeMatches.delete(roomToEnd);
+      
+      // Make both users leave the room
+      socket.leave(roomToEnd);
+      if (partnerSocket) {
+        partnerSocket.leave(roomToEnd);
+      }
+    }
+  });
+
+  // Handle disconnection with improved cleanup
+  socket.on('disconnect', async () => {
     console.log('User disconnected:', userId);
     
     // Remove from active users
@@ -418,20 +498,54 @@ io.on('connection', (socket) => {
     // Remove from waiting list
     waitingUsers.delete(userId);
     
-    // Notify partner if in active match
+    // Update online status
+    await updateUserOnlineStatus(userId, false);
+    
+    // Handle active matches
     for (const [roomId, match] of activeMatches.entries()) {
       if (match.user1 === userId || match.user2 === userId) {
         const partnerId = match.user1 === userId ? match.user2 : match.user1;
         const partnerSocket = io.sockets.sockets.get(activeUsers.get(partnerId));
         
         if (partnerSocket) {
-          partnerSocket.emit('partnerDisconnected');
+          partnerSocket.emit('partnerDisconnected', {
+            roomId,
+            partnerId: userId
+          });
         }
         
+        // Update match status in database
+        try {
+          const { error } = await supabase
+            .from('matches')
+            .update({ 
+              status: 'disconnected',
+              ended_at: new Date().toISOString(),
+              ended_by: userId,
+              disconnect_reason: 'user_disconnected'
+            })
+            .eq('room_id', roomId);
+
+          if (error) {
+            console.error('Error updating match status:', error);
+          }
+        } catch (error) {
+          console.error('Database error:', error);
+        }
+        
+        // Clean up the room
         activeMatches.delete(roomId);
+        socket.leave(roomId);
+        if (partnerSocket) {
+          partnerSocket.leave(roomId);
+        }
+        
         break;
       }
     }
+
+    // Broadcast updated active users
+    await broadcastActiveUsers();
   });
 });
 

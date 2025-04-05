@@ -25,8 +25,8 @@ interface ChatMessage {
 
 export default function VideoChat() {
   const navigate = useNavigate();
-  const [localStream, setLocalStream] = useState<MediaStream | null>(null);
-  const [remoteStream, setRemoteStream] = useState<MediaStream | null>(null);
+  const [localStream, setLocalStream] = useState<MediaStream | undefined>(undefined);
+  const [remoteStream, setRemoteStream] = useState<MediaStream | undefined>(undefined);
   const [isMatching, setIsMatching] = useState(false);
   const [error, setError] = useState<string>('');
   const [isConnected, setIsConnected] = useState(false);
@@ -125,7 +125,7 @@ export default function VideoChat() {
         console.log(`Stopping local stream track: ${track.kind}`);
         track.stop();
       });
-      setLocalStream(null);
+      setLocalStream(undefined);
     }
     
     // Stop remote stream tracks
@@ -134,7 +134,7 @@ export default function VideoChat() {
         console.log(`Stopping remote stream track: ${track.kind}`);
         track.stop();
       });
-      setRemoteStream(null);
+      setRemoteStream(undefined);
     }
 
     // Clear video elements
@@ -326,41 +326,165 @@ export default function VideoChat() {
           // Initialize WebRTC connection
           const peer = new Peer({
             initiator: isInitiator,
+            trickle: true,
             stream: localStream,
-            trickle: false
-          });
-
-          // Handle peer signals
-          peer.on('signal', (signal) => {
-            console.log('Sending signal to partner');
-            socket.emit('signal', {
-              to: partnerId,
-              signal,
-              roomId
-            });
-          });
-
-          // Handle incoming signals
-          socket.on('signal', ({ from, signal }) => {
-            console.log('Received signal from partner');
-            if (from === partnerId) {
-              peer.signal(signal);
+            config: {
+              iceTransportPolicy: 'all',
+              bundlePolicy: 'max-bundle',
+              rtcpMuxPolicy: 'require',
+              iceServers: [
+                { urls: 'stun:stun.l.google.com:19302' },
+                { urls: 'stun:stun1.l.google.com:19302' },
+                { 
+                  urls: [
+                    'turn:openrelay.metered.ca:80',
+                    'turn:openrelay.metered.ca:443',
+                    'turn:openrelay.metered.ca:443?transport=tcp'
+                  ],
+                  username: 'openrelayproject',
+                  credential: 'openrelayproject',
+                }
+              ]
             }
           });
 
-          // Handle stream
-          peer.on('stream', (stream) => {
-            console.log('Received partner stream');
-            if (remoteVideoRef.current) {
-              remoteVideoRef.current.srcObject = stream;
-            }
+          // Debug peer instance
+          console.log('Peer instance created:', {
+            initiator: isInitiator,
+            hasStream: !!localStream,
+            streamTracks: localStream ? {
+              audio: localStream.getAudioTracks().length,
+              video: localStream.getVideoTracks().length
+            } : null,
+            peerConfig: peer._config
+          });
+
+          // Set call start time when peer connects
+          peer.on('connect', () => {
+            console.log('Peer connection established');
+            setConnectionStatus('Connected to partner');
             setCallStartTime(new Date());
+            setError('');
+          });
+
+          // Handle peer signals with better error handling
+          peer.on('signal', (signal) => {
+            console.log('Generated signal:', {
+              type: signal.type,
+              signalData: signal
+            });
+
+            if (!socketRef.current) {
+              console.error('Socket not available when trying to send signal');
+              setError('Connection error: Socket not available');
+              return;
+            }
+
+            try {
+              socketRef.current.emit('signal', {
+                to: partnerId,
+                signal,
+                roomId
+              });
+            } catch (error) {
+              console.error('Error sending signal:', error);
+              setError('Failed to send connection signal');
+            }
+          });
+
+          // Handle incoming signals with validation
+          socket.on('signal', ({ from, signal, roomId: incomingRoomId }) => {
+            console.log('Received signal:', { 
+              from, 
+              type: signal.type,
+              roomId: incomingRoomId,
+              signalData: signal
+            });
+
+            if (from === partnerId && incomingRoomId === roomId) {
+              try {
+                if (!signal) {
+                  throw new Error('Received empty signal');
+                }
+                peer.signal(signal);
+                console.log('Successfully applied signal');
+              } catch (error) {
+                console.error('Error applying signal:', error);
+                setError('Failed to establish peer connection. Please try again.');
+              }
+            } else {
+              console.warn('Received signal from unknown partner or wrong room');
+            }
+          });
+
+          // Handle stream with validation
+          peer.on('stream', (incomingStream: MediaStream) => {
+            console.log('Received remote stream:', {
+              audioTracks: incomingStream.getAudioTracks().length,
+              videoTracks: incomingStream.getVideoTracks().length,
+              audioEnabled: incomingStream.getAudioTracks().some(track => track.enabled),
+              videoEnabled: incomingStream.getVideoTracks().some(track => track.enabled)
+            });
+            
+            setRemoteStream(incomingStream);
+            if (remoteVideoRef.current) {
+              remoteVideoRef.current.srcObject = incomingStream;
+              remoteVideoRef.current.play().catch(err => {
+                console.error('Error playing remote video:', err);
+                setError('Failed to play remote video. Please check permissions.');
+              });
+            } else {
+              console.error('Remote video ref not available');
+              setError('Failed to display remote video');
+            }
+          });
+
+          // Handle ICE connection state changes with more detailed logging
+          peer.on('iceStateChange', (state) => {
+            console.log('ICE connection state changed:', {
+              state,
+              timestamp: new Date().toISOString(),
+              hasRemoteStream: !!remoteStream,
+              hasLocalStream: !!localStream
+            });
+
+            switch (state) {
+              case 'checking':
+                setConnectionStatus('Establishing connection...');
+                break;
+              case 'connected':
+                setConnectionStatus('Connected to partner');
+                setError('');
+                break;
+              case 'completed':
+                setConnectionStatus('Connection established');
+                break;
+              case 'disconnected':
+                setConnectionStatus('Connection interrupted. Trying to reconnect...');
+                console.warn('ICE connection interrupted');
+                break;
+              case 'failed':
+                console.error('ICE connection failed');
+                setError('Connection failed. Please try again.');
+                cleanupCall();
+                break;
+              case 'closed':
+                console.log('ICE connection closed');
+                cleanupCall();
+                break;
+            }
           });
 
           // Handle peer errors
           peer.on('error', (err) => {
             console.error('Peer connection error:', err);
-            setError(`Connection error: ${err.message}`);
+            setError(`Connection error: ${err.message}. Please try again.`);
+            cleanupCall();
+          });
+
+          // Handle peer close
+          peer.on('close', () => {
+            console.log('Peer connection closed');
             cleanupCall();
           });
 
@@ -405,22 +529,102 @@ export default function VideoChat() {
     }
   }, [localStream, socketRef]);
 
-  // Handle end call
-  const handleEndCall = useCallback(() => {
-    console.log('Ending call');
-    cleanupCall();
-    setIsMatched(false);
-    setCurrentPartnerId(null);
-    setConnectionStatus('Call ended');
-  }, []);
-
   // Cleanup function
   const cleanupCall = useCallback(() => {
+    console.log('Cleaning up call...');
+    
+    // Clean up peer connection
     if (peerConnectionRef.current) {
+      console.log('Destroying peer connection');
       peerConnectionRef.current.destroy();
       peerConnectionRef.current = null;
     }
-  }, []);
+
+    // Clean up socket listeners
+    if (socketRef.current) {
+      console.log('Removing socket listeners');
+      socketRef.current.off('signal');
+      socketRef.current.off('stream');
+      socketRef.current.off('connect');
+      socketRef.current.off('error');
+      socketRef.current.off('close');
+    }
+
+    // Stop remote stream
+    if (remoteStream) {
+      console.log('Stopping remote stream tracks');
+      remoteStream.getTracks().forEach(track => {
+        track.stop();
+      });
+      setRemoteStream(undefined);
+    }
+
+    // Clear remote video
+    if (remoteVideoRef.current) {
+      console.log('Clearing remote video element');
+      remoteVideoRef.current.srcObject = null;
+    }
+
+    // Reset states
+    setIsMatched(false);
+    setCurrentPartnerId(null);
+    setConnectionStatus('Call ended');
+    setMessages([]);
+    setLikes(0);
+    setHasLiked(false);
+  }, [remoteStream]);
+
+  // Handle end call
+  const handleEndCall = useCallback(async () => {
+    console.log('Ending call');
+    
+    // Store activity data if we have a partner and call start time
+    if (socketRef.current && currentPartnerId) {
+      // Notify server and partner
+      socketRef.current.emit('endCall', { 
+        partnerId: currentPartnerId 
+      });
+
+      // Store call activity in database
+      if (callStartTime) {
+        const endTime = new Date();
+        const duration = Math.floor((endTime.getTime() - callStartTime.getTime()) / 1000); // duration in seconds
+        
+        try {
+          const { data: { session } } = await supabase.auth.getSession();
+          if (session?.user) {
+            // Store activity in Supabase
+            const { error } = await supabase
+              .from('recent_activities')
+              .insert({
+                user_id: session.user.id,
+                partner_id: currentPartnerId,
+                activity_type: 'video_call',
+                duration,
+                likes_received: likes,
+                messages_exchanged: messages.length,
+                created_at: callStartTime.toISOString(),
+                ended_at: endTime.toISOString()
+              });
+
+            if (error) {
+              console.error('Failed to store activity:', error);
+            }
+          }
+        } catch (error) {
+          console.error('Error storing activity:', error);
+        }
+      }
+    }
+    
+    // Clean up the call
+    cleanupCall();
+
+    // Navigate to dashboard after a short delay to allow cleanup
+    setTimeout(() => {
+      navigate('/dashboard');
+    }, 500);
+  }, [currentPartnerId, callStartTime, likes, messages.length, cleanupCall, navigate]);
 
   // Handle partner disconnection
   useEffect(() => {
