@@ -233,15 +233,20 @@ export default function VideoChat() {
           return;
         }
 
-        const backendUrl = import.meta.env.VITE_BACKEND_URL || 'http://localhost:3000';
+        const backendUrl = import.meta.env.VITE_BACKEND_URL;
         console.log('Connecting to backend at:', backendUrl);
 
         // Try to ping the server first
         try {
           console.log('Pinging server attempt 1...');
-          const response = await fetch(`${backendUrl}/health`);
+          const response = await fetch(`${backendUrl}/health`, {
+            credentials: 'include'
+          });
           if (response.ok) {
             console.log('Server is awake and responding');
+          } else {
+            console.error('Server health check failed:', response.status);
+            throw new Error('Server health check failed');
           }
         } catch (error) {
           console.error('Server ping failed:', error);
@@ -255,7 +260,7 @@ export default function VideoChat() {
             token: session.access_token
           },
           query: {
-            userId: session.user.id // Add user ID to connection query
+            userId: session.user.id
           },
           transports: ['websocket', 'polling'],
           reconnection: true,
@@ -263,6 +268,7 @@ export default function VideoChat() {
           reconnectionDelay: 1000,
           reconnectionDelayMax: 5000,
           timeout: 10000,
+          withCredentials: true,
           forceNew: true
         });
 
@@ -275,33 +281,17 @@ export default function VideoChat() {
 
         socket.on('connect_error', (error) => {
           console.error('Socket connection error:', error);
-          setError('Failed to connect to video chat server. Please try again.');
+          setError(`Failed to connect to video chat server: ${error.message}`);
           setIsConnected(false);
         });
 
         socket.on('disconnect', (reason) => {
           console.log('Socket disconnected:', reason);
-          setConnectionStatus('Disconnected from server');
+          setConnectionStatus(`Disconnected from server: ${reason}`);
           setIsConnected(false);
           if (reason === 'io server disconnect') {
             // Server disconnected us, try to reconnect
             socket.connect();
-          }
-        });
-
-        // Add matchFound event handler
-        socket.on('matchFound', async ({ roomId, partnerId, isInitiator }) => {
-          console.log('Match found:', { roomId, partnerId, isInitiator });
-          setIsMatching(false);
-          setCurrentPartnerId(partnerId);
-          setCallStartTime(new Date());
-          
-          try {
-            await initializePeer(isInitiator, partnerId);
-            setError('');
-          } catch (error) {
-            console.error('Failed to initialize peer connection:', error);
-            setError('Failed to establish connection with partner. Please try again.');
           }
         });
 
@@ -314,7 +304,6 @@ export default function VideoChat() {
 
     initializeSocket();
 
-    // Cleanup function
     return () => {
       if (socketRef.current) {
         console.log('Cleaning up socket connection...');

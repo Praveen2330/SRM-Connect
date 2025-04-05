@@ -19,23 +19,34 @@ if (!supabaseUrl || !supabaseAnonKey) {
 
 const supabase = createClient(supabaseUrl, supabaseAnonKey);
 
-// Get the allowed origins
-const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:5173';
+// Configure allowed origins
 const allowedOrigins = [
-  'http://localhost:5173',
-  'http://localhost:5174',
   'http://localhost:3001',
-  frontendUrl
+  'http://localhost:5173',
+  'https://srm-connect.vercel.app',
+  'https://srm-connect-git-main-praveen2330.vercel.app',
+  'https://srm-connect-praveen2330.vercel.app'
 ];
 
 console.log('Allowed origins for CORS:', allowedOrigins);
 
 // Configure CORS
-app.use(cors({
-  origin: allowedOrigins,
+const corsOptions = {
+  origin: function (origin, callback) {
+    console.log('Request origin:', origin);
+    if (!origin || allowedOrigins.indexOf(origin) !== -1) {
+      callback(null, true);
+    } else {
+      console.error('Origin not allowed:', origin);
+      callback(new Error('Not allowed by CORS'));
+    }
+  },
   methods: ['GET', 'POST'],
-  credentials: true
-}));
+  credentials: true,
+  optionsSuccessStatus: 200
+};
+
+app.use(cors(corsOptions));
 
 app.use(express.json());
 
