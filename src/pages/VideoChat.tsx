@@ -350,18 +350,10 @@ export default function VideoChat() {
               ],
               username: 'openrelayproject',
               credential: 'openrelayproject'
-            },
-            {
-              urls: [
-                'turn:relay1.expressturn.com:3478',
-                'turn:relay1.expressturn.com:3478?transport=tcp'
-              ],
-              username: 'efK7QBQMG9U5PF9K',
-              credential: 'JWU2pRvkBdF9YVK7'
             }
           ]
         },
-        sdpTransform: (sdp) => {
+        sdpTransform: (sdp: string) => {
           // Add ICE restart support and bundle policy
           sdp = sdp.replace(/a=ice-options:trickle\r\n/g, 'a=ice-options:trickle renomination\r\n');
           sdp = sdp.replace(/a=group:BUNDLE/g, 'a=group:BUNDLE 0');
@@ -409,7 +401,7 @@ export default function VideoChat() {
       let connectionTimeout: number;
       const resetConnectionTimeout = () => {
         if (connectionTimeout) window.clearTimeout(connectionTimeout);
-        connectionTimeout = window.setTimeout(() => {
+        connectionTimeout = window.setTimeout(async () => {
           if (reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
             console.log(`Connection timeout - attempting reconnect (${reconnectAttempts + 1}/${MAX_RECONNECT_ATTEMPTS})`);
             reconnectAttempts++;
@@ -417,25 +409,88 @@ export default function VideoChat() {
             
             try {
               if (peer && !peer.destroyed) {
-                // Clear existing event listeners
-                peer.removeAllListeners();
-                
-                // Re-setup all event listeners
-                setupPeerListeners(peer);
-                
-                // Force ICE restart
-                if (peer._pc.connectionState !== 'closed') {
-                  peer._pc.restartIce();
-                  // Create and send a new offer if we're the initiator
-                  if (isInitiator) {
-                    peer._pc.createOffer({ iceRestart: true })
-                      .then(offer => peer._pc.setLocalDescription(offer))
-                      .catch(error => {
-                        console.error('Error creating restart offer:', error);
-                        cleanupCall();
-                      });
+                // Close existing peer connection cleanly
+                if (peer._pc) {
+                  try {
+                    // Remove all tracks from peer connection
+                    const senders = peer._pc.getSenders();
+                    for (const sender of senders) {
+                      peer._pc.removeTrack(sender);
+                    }
+                    
+                    // Close the peer connection
+                    peer._pc.close();
+                  } catch (e) {
+                    console.warn('Error cleaning up peer connection:', e);
                   }
                 }
+
+                // Create a new peer connection
+                const newPeer = new Peer({
+                  initiator: isInitiator,
+                  trickle: true,
+                  stream: localStream,
+                  config: {
+                    iceTransportPolicy: 'all',
+                    bundlePolicy: 'max-bundle',
+                    rtcpMuxPolicy: 'require',
+                    iceCandidatePoolSize: 10,
+                    iceServers: [
+                      { 
+                        urls: [
+                          'stun:stun1.l.google.com:19302',
+                          'stun:stun2.l.google.com:19302',
+                          'stun:stun3.l.google.com:19302',
+                          'stun:stun4.l.google.com:19302'
+                        ]
+                      },
+                      {
+                        urls: [
+                          'turn:a.relay.metered.ca:80',
+                          'turn:a.relay.metered.ca:80?transport=tcp',
+                          'turn:a.relay.metered.ca:443',
+                          'turn:a.relay.metered.ca:443?transport=tcp'
+                        ],
+                        username: 'e899a0e2c0e6a7c4d2b8f8d6',
+                        credential: 'SrmConnect123'
+                      },
+                      {
+                        urls: [
+                          'turn:openrelay.metered.ca:80',
+                          'turn:openrelay.metered.ca:443',
+                          'turn:openrelay.metered.ca:443?transport=tcp'
+                        ],
+                        username: 'openrelayproject',
+                        credential: 'openrelayproject'
+                      }
+                    ]
+                  },
+                  sdpTransform: (sdp: string) => {
+                    // Add ICE restart support and bundle policy
+                    sdp = sdp.replace(/a=ice-options:trickle\r\n/g, 'a=ice-options:trickle renomination\r\n');
+                    sdp = sdp.replace(/a=group:BUNDLE/g, 'a=group:BUNDLE 0');
+                    // Increase UDP candidate priority
+                    sdp = sdp.replace(/a=candidate:(\S*)\s+udp/gi, 'a=candidate:$1 udp 2130706431');
+                    // Add bandwidth constraints for better quality
+                    sdp = sdp.replace(/c=IN IP4.*\r\n/g, '$&b=AS:2000\r\n');
+                    return sdp;
+                  }
+                }) as ExtendedPeer;
+
+                // Update the peer reference
+                peerConnectionRef.current = newPeer;
+
+                // Set up listeners for the new peer
+                setupPeerListeners(newPeer);
+
+                // Clean up old peer without using process.nextTick
+                try {
+                  peer.destroy();
+                } catch (e) {
+                  console.warn('Error destroying old peer:', e);
+                }
+
+                // Reset timeout for new connection
                 resetConnectionTimeout();
               }
             } catch (error) {
@@ -443,11 +498,10 @@ export default function VideoChat() {
               cleanupCall();
             }
           } else {
-            console.error('Max reconnection attempts reached - destroying peer');
-            peer.destroy();
+            console.error('Max reconnection attempts reached - cleaning up');
+            cleanupCall();
             setError('Connection failed after multiple attempts. Please try again.');
             setConnectionStatus('Connection failed');
-            cleanupCall();
           }
         }, isReconnecting ? RECONNECT_DELAY : 15000);
       };
@@ -455,9 +509,7 @@ export default function VideoChat() {
       // Set up all peer event listeners
       const setupPeerListeners = (peer: ExtendedPeer) => {
         // Track ICE gathering state
-        let hasGatheredIceCandidates = false;
-        let iceGatheringTimeout: number;
-        let gatheredCandidates = {
+        const gatheredCandidates = {
           host: 0,
           srflx: 0,
           relay: 0
@@ -489,11 +541,6 @@ export default function VideoChat() {
           });
 
           if (state === 'complete') {
-            hasGatheredIceCandidates = true;
-            if (iceGatheringTimeout) {
-              window.clearTimeout(iceGatheringTimeout);
-            }
-
             // Check if we have enough candidates
             const hasEnoughCandidates = 
               gatheredCandidates.host > 0 || 
@@ -507,32 +554,19 @@ export default function VideoChat() {
           }
         };
 
-        // Set ICE gathering timeout with progressive checks
-        const ICE_GATHERING_TIMEOUT = 8000; // 8 seconds total
-        const CHECK_INTERVAL = 2000; // Check every 2 seconds
-
-        const checkProgress = (elapsedTime: number) => {
-          if (hasGatheredIceCandidates) return;
-
-          if (elapsedTime >= ICE_GATHERING_TIMEOUT) {
-            console.warn('ICE gathering timed out - proceeding with available candidates:', gatheredCandidates);
-            hasGatheredIceCandidates = true;
-            return;
+        // Monitor connection state
+        peer._pc.onconnectionstatechange = () => {
+          const state = peer._pc.connectionState;
+          console.log('Connection state changed:', state);
+          
+          if (state === 'failed' || state === 'disconnected') {
+            if (!isReconnecting && reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
+              console.log('Connection state indicates failure, attempting reconnect');
+              isReconnecting = true;
+              resetConnectionTimeout();
+            }
           }
-
-          // Check if we have enough candidates to proceed early
-          if (gatheredCandidates.relay > 0 || (gatheredCandidates.srflx > 0 && gatheredCandidates.host > 0)) {
-            console.log('Sufficient candidates gathered early:', gatheredCandidates);
-            hasGatheredIceCandidates = true;
-            return;
-          }
-
-          // Schedule next check
-          window.setTimeout(() => checkProgress(elapsedTime + CHECK_INTERVAL), CHECK_INTERVAL);
         };
-
-        // Start progressive checks
-        checkProgress(0);
 
         peer.on('signal', (signal) => {
           console.log('Generated signal:', {
@@ -689,8 +723,37 @@ export default function VideoChat() {
     // Clean up peer connection
     if (peerConnectionRef.current) {
       console.log('Destroying peer connection');
-      peerConnectionRef.current.destroy();
-      peerConnectionRef.current = null;
+      try {
+        // Safely remove event listeners before destroying
+        const events = ['signal', 'connect', 'error', 'close', 'stream'];
+        events.forEach(event => {
+          try {
+            peerConnectionRef.current?.removeAllListeners(event);
+          } catch (e) {
+            console.warn(`Error removing listeners for ${event}:`, e);
+          }
+        });
+        
+        // Close peer connection
+        if (peerConnectionRef.current._pc) {
+          peerConnectionRef.current._pc.close();
+        }
+        
+        // Destroy peer after a short delay to allow cleanup
+        setTimeout(() => {
+          try {
+            if (peerConnectionRef.current && !peerConnectionRef.current.destroyed) {
+              peerConnectionRef.current.destroy();
+            }
+          } catch (e) {
+            console.warn('Error destroying peer:', e);
+          }
+          peerConnectionRef.current = null;
+        }, 100);
+      } catch (error) {
+        console.warn('Error during peer cleanup:', error);
+        peerConnectionRef.current = null;
+      }
     }
 
     // Clean up socket listeners
@@ -716,9 +779,9 @@ export default function VideoChat() {
     }
 
     // Clear remote video
-      if (remoteVideoRef.current) {
+    if (remoteVideoRef.current) {
       console.log('Clearing remote video element');
-        remoteVideoRef.current.srcObject = null;
+      remoteVideoRef.current.srcObject = null;
     }
 
     // Reset states
@@ -840,7 +903,7 @@ export default function VideoChat() {
   useEffect(() => {
     if (!socketRef.current) return;
 
-    socketRef.current.on('chatMessage', ({ content, from }: ChatMessage) => {
+    socketRef.current.on('chatMessage', ({ content }: ChatMessage) => {
       const message: Message = {
         id: Date.now().toString(),
         content,
