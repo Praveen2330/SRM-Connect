@@ -341,6 +341,23 @@ export default function VideoChat() {
               ],
               username: 'e899a0e2c0e6a7c4d2b8f8d6',
               credential: 'SrmConnect123'
+            },
+            {
+              urls: [
+                'turn:openrelay.metered.ca:80',
+                'turn:openrelay.metered.ca:443',
+                'turn:openrelay.metered.ca:443?transport=tcp'
+              ],
+              username: 'openrelayproject',
+              credential: 'openrelayproject'
+            },
+            {
+              urls: [
+                'turn:relay1.expressturn.com:3478',
+                'turn:relay1.expressturn.com:3478?transport=tcp'
+              ],
+              username: 'efK7QBQMG9U5PF9K',
+              credential: 'JWU2pRvkBdF9YVK7'
             }
           ]
         },
@@ -348,11 +365,10 @@ export default function VideoChat() {
           // Add ICE restart support and bundle policy
           sdp = sdp.replace(/a=ice-options:trickle\r\n/g, 'a=ice-options:trickle renomination\r\n');
           sdp = sdp.replace(/a=group:BUNDLE/g, 'a=group:BUNDLE 0');
-          // Increase UDP candidate priority and add bandwidth constraints
+          // Increase UDP candidate priority
           sdp = sdp.replace(/a=candidate:(\S*)\s+udp/gi, 'a=candidate:$1 udp 2130706431');
+          // Add bandwidth constraints for better quality
           sdp = sdp.replace(/c=IN IP4.*\r\n/g, '$&b=AS:2000\r\n');
-          // Add ICE candidate policy
-          sdp = sdp.replace(/a=ice-pwd/g, 'a=ice-lite\r\na=ice-pwd');
           return sdp;
         }
       }) as ExtendedPeer;
@@ -441,33 +457,82 @@ export default function VideoChat() {
         // Track ICE gathering state
         let hasGatheredIceCandidates = false;
         let iceGatheringTimeout: number;
+        let gatheredCandidates = {
+          host: 0,
+          srflx: 0,
+          relay: 0
+        };
 
         peer._pc.onicecandidate = (event) => {
-          console.log('ICE candidate:', event.candidate ? {
-            type: event.candidate.type,
-            protocol: event.candidate.protocol,
-            address: event.candidate.address,
-            port: event.candidate.port
-          } : 'null (gathering complete)');
+          if (event.candidate) {
+            const candidate = event.candidate;
+            gatheredCandidates[candidate.type as keyof typeof gatheredCandidates]++;
+            
+            console.log('ICE candidate:', {
+              type: candidate.type,
+              protocol: candidate.protocol,
+              address: candidate.address,
+              port: candidate.port,
+              counts: { ...gatheredCandidates }
+            });
+          } else {
+            console.log('ICE gathering complete. Final candidates:', gatheredCandidates);
+          }
         };
 
         peer._pc.onicegatheringstatechange = () => {
-          console.log('ICE gathering state:', peer._pc.iceGatheringState);
-          if (peer._pc.iceGatheringState === 'complete') {
+          const state = peer._pc.iceGatheringState;
+          console.log('ICE gathering state changed:', {
+            state,
+            candidates: { ...gatheredCandidates },
+            timestamp: new Date().toISOString()
+          });
+
+          if (state === 'complete') {
             hasGatheredIceCandidates = true;
             if (iceGatheringTimeout) {
               window.clearTimeout(iceGatheringTimeout);
             }
+
+            // Check if we have enough candidates
+            const hasEnoughCandidates = 
+              gatheredCandidates.host > 0 || 
+              gatheredCandidates.srflx > 0 || 
+              gatheredCandidates.relay > 0;
+
+            if (!hasEnoughCandidates) {
+              console.warn('No usable ICE candidates found - connection may fail');
+              setError('Connection issue: No valid network paths found');
+            }
           }
         };
 
-        // Set ICE gathering timeout
-        iceGatheringTimeout = window.setTimeout(() => {
-          if (!hasGatheredIceCandidates) {
-            console.warn('ICE gathering timed out - proceeding with available candidates');
+        // Set ICE gathering timeout with progressive checks
+        const ICE_GATHERING_TIMEOUT = 8000; // 8 seconds total
+        const CHECK_INTERVAL = 2000; // Check every 2 seconds
+
+        const checkProgress = (elapsedTime: number) => {
+          if (hasGatheredIceCandidates) return;
+
+          if (elapsedTime >= ICE_GATHERING_TIMEOUT) {
+            console.warn('ICE gathering timed out - proceeding with available candidates:', gatheredCandidates);
             hasGatheredIceCandidates = true;
+            return;
           }
-        }, 5000);
+
+          // Check if we have enough candidates to proceed early
+          if (gatheredCandidates.relay > 0 || (gatheredCandidates.srflx > 0 && gatheredCandidates.host > 0)) {
+            console.log('Sufficient candidates gathered early:', gatheredCandidates);
+            hasGatheredIceCandidates = true;
+            return;
+          }
+
+          // Schedule next check
+          window.setTimeout(() => checkProgress(elapsedTime + CHECK_INTERVAL), CHECK_INTERVAL);
+        };
+
+        // Start progressive checks
+        checkProgress(0);
 
         peer.on('signal', (signal) => {
           console.log('Generated signal:', {
