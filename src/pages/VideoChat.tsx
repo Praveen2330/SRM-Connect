@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { io, Socket } from 'socket.io-client';
 import Peer from 'simple-peer';
@@ -38,12 +38,15 @@ export default function VideoChat() {
   const [hasLiked, setHasLiked] = useState(false);
   const [callStartTime, setCallStartTime] = useState<Date | null>(null);
   const [currentPartnerId, setCurrentPartnerId] = useState<string | null>(null);
+  const [isMatched, setIsMatched] = useState(false);
+  const [isSearching, setIsSearching] = useState(false);
 
   const socketRef = useRef<Socket>();
   const peerRef = useRef<Peer.Instance>();
   const localVideoRef = useRef<HTMLVideoElement>(null);
   const remoteVideoRef = useRef<HTMLVideoElement>(null);
   const chatContainerRef = useRef<HTMLDivElement>(null);
+  const peerConnectionRef = useRef<Peer.Instance | null>(null);
 
   // Initialize media function with retries
   const initializeMedia = async () => {
@@ -311,6 +314,60 @@ export default function VideoChat() {
         });
 
         socketRef.current = socket;
+
+        // Handle match found event
+        socket.on('matchFound', ({ roomId, partnerId, isInitiator }) => {
+          console.log('Match found:', { roomId, partnerId, isInitiator });
+          setCurrentPartnerId(partnerId);
+          setIsMatched(true);
+          setIsSearching(false);
+          setConnectionStatus('Match found! Establishing connection...');
+
+          // Initialize WebRTC connection
+          const peer = new Peer({
+            initiator: isInitiator,
+            stream: localStream,
+            trickle: false
+          });
+
+          // Handle peer signals
+          peer.on('signal', (signal) => {
+            console.log('Sending signal to partner');
+            socket.emit('signal', {
+              to: partnerId,
+              signal,
+              roomId
+            });
+          });
+
+          // Handle incoming signals
+          socket.on('signal', ({ from, signal }) => {
+            console.log('Received signal from partner');
+            if (from === partnerId) {
+              peer.signal(signal);
+            }
+          });
+
+          // Handle stream
+          peer.on('stream', (stream) => {
+            console.log('Received partner stream');
+            if (remoteVideoRef.current) {
+              remoteVideoRef.current.srcObject = stream;
+            }
+            setCallStartTime(new Date());
+          });
+
+          // Handle peer errors
+          peer.on('error', (err) => {
+            console.error('Peer connection error:', err);
+            setError(`Connection error: ${err.message}`);
+            cleanupCall();
+          });
+
+          // Store peer for cleanup
+          peerConnectionRef.current = peer;
+        });
+
       } catch (error) {
         console.error('Socket initialization error:', error);
         setError('Failed to initialize video chat. Please try again.');
@@ -327,220 +384,58 @@ export default function VideoChat() {
     };
   }, []);
 
-  const initializePeer = async (isInitiator: boolean, partnerId: string) => {
-    if (!localStream) {
-      throw new Error('No local stream available for peer connection');
-    }
-
-    console.log('Initializing peer connection:', { isInitiator, partnerId });
-
-    try {
-      // Remove any existing peer connection
-      if (peerRef.current) {
-        peerRef.current.destroy();
-      }
-
-      const peerOptions = {
-        initiator: isInitiator,
-        stream: localStream,
-        trickle: false,
-        config: {
-          iceServers: [
-            { urls: 'stun:stun.l.google.com:19302' },
-            { urls: 'stun:global.stun.twilio.com:3478' },
-            {
-              urls: 'turn:global.turn.twilio.com:3478',
-              username: 'your_username',  // Replace with your TURN server credentials
-              credential: 'your_credential'
-            }
-          ]
-        }
-      };
-
-      peerRef.current = new Peer(peerOptions);
-
-      // When we have a signal to send
-      peerRef.current.on('signal', signal => {
-        console.log('Sending signal to partner:', partnerId);
-        socketRef.current?.emit('signal', {
-          signal,
-          to: partnerId
-        });
-      });
-
-      // When we receive the remote stream
-      peerRef.current.on('stream', stream => {
-        console.log('Received remote stream');
-        setRemoteStream(stream);
-        if (remoteVideoRef.current) {
-          remoteVideoRef.current.srcObject = stream;
-        }
-      });
-
-      peerRef.current.on('error', (err) => {
-        console.error('Peer error:', err);
-        setError('Connection error occurred. Please try again.');
-      });
-
-      peerRef.current.on('connect', () => {
-        console.log('Peer connection established successfully');
-        setError(''); // Clear any existing errors
-      });
-
-      peerRef.current.on('close', () => {
-        console.log('Peer connection closed');
-        stopAllMediaTracks();
-      });
-
-      // Remove any existing signal handlers
-      socketRef.current?.off('signal');
-
-      // Handle incoming signals
-      socketRef.current?.on('signal', ({ signal, from }: SignalData) => {
-        if (from === partnerId) {
-          console.log('Received signal from partner:', from);
-          try {
-            peerRef.current?.signal(signal);
-          } catch (error) {
-            console.error('Error processing signal:', error);
-            setError('Failed to process connection signal. Please try again.');
-          }
-        }
-      });
-
-    } catch (err) {
-      console.error('Error creating peer:', err);
-      throw new Error('Failed to create peer connection');
-    }
-  };
-
-  const handleFindMatch = async () => {
-    if (!isConnected) {
-      setError('Not connected to server. Please wait or refresh the page.');
+  // Handle find match click
+  const handleFindMatch = useCallback(async () => {
+    if (!localStream || !socketRef.current) {
+      setError('Please allow camera access first');
       return;
     }
 
     try {
-      setIsMatching(true);
+      setIsSearching(true);
+      setConnectionStatus('Looking for a match...');
       setError('');
 
-      // Ensure we have a local stream before finding a match
-      if (!localStream) {
-        console.log('No local stream, initializing media...');
-        const stream = await initializeMedia();
-        if (!stream) {
-          throw new Error('Failed to initialize media stream');
-        }
-      } else {
-        console.log('Using existing local stream:', {
-          audioTracks: localStream.getAudioTracks().length,
-          videoTracks: localStream.getVideoTracks().length
-        });
-      }
-
-      // Double check that we have a valid stream with tracks
-      if (!localStream?.getTracks().length) {
-        console.log('Stream has no tracks, reinitializing...');
-        const stream = await initializeMedia();
-        if (!stream) {
-          throw new Error('Failed to initialize media stream');
-        }
-      }
-
-      console.log('Starting match search with valid stream...');
-
-      // Emit findMatch event to server
-      console.log('Emitting findMatch event to server...');
-      socketRef.current?.emit('findMatch');
-
-      // Add a timeout to stop searching after 30 seconds
-      setTimeout(() => {
-        if (isMatching) {
-          console.log('Match search timeout...');
-          setIsMatching(false);
-          setError('Could not find a match. Please try again.');
-        }
-      }, 30000);
+      console.log('Emitting findMatch event');
+      socketRef.current.emit('findMatch');
     } catch (error) {
       console.error('Error in handleFindMatch:', error);
-      setIsMatching(false);
-      setError('Failed to initialize camera. Please check permissions and try again.');
+      setError('Failed to start match search. Please try again.');
+      setIsSearching(false);
     }
-  };
+  }, [localStream, socketRef]);
 
-  const handleEndCall = async () => {
-    console.log('Ending call...');
-    
-    // Store activity data if we have a partner
-    if (currentPartnerId && callStartTime) {
-      const endTime = new Date();
-      const duration = Math.floor((endTime.getTime() - callStartTime.getTime()) / 1000); // duration in seconds
-      
-      const activity: RecentActivity = {
-        id: Date.now().toString(),
-        partnerId: currentPartnerId,
-        timestamp: callStartTime,
-        duration,
-        likes,
-        messages: messages.length
-      };
+  // Handle end call
+  const handleEndCall = useCallback(() => {
+    console.log('Ending call');
+    cleanupCall();
+    setIsMatched(false);
+    setCurrentPartnerId(null);
+    setConnectionStatus('Call ended');
+  }, []);
 
-      try {
-        // Get existing activities
-        const { data: existingData } = await supabase
-          .from('recent_activities')
-          .select('activities')
-          .single();
-
-        const activities = existingData?.activities || [];
-        
-        // Add new activity and keep only last 10
-        const updatedActivities = [activity, ...activities].slice(0, 10);
-
-        // Update activities in database
-        await supabase
-          .from('recent_activities')
-          .upsert({ activities: updatedActivities });
-
-      } catch (error) {
-        console.error('Failed to store activity:', error);
-      }
+  // Cleanup function
+  const cleanupCall = useCallback(() => {
+    if (peerConnectionRef.current) {
+      peerConnectionRef.current.destroy();
+      peerConnectionRef.current = null;
     }
-    
-    // Stop all media tracks first
-    stopAllMediaTracks();
-    
-    // Destroy peer connection
-    if (peerRef.current) {
-      peerRef.current.destroy();
-      peerRef.current = undefined;
-    }
-    
-    // Clean up socket listeners and disconnect
-    if (socketRef.current) {
-      socketRef.current.off('signal');
-      socketRef.current.off('partnerDisconnected');
-      socketRef.current.disconnect();
-    }
+  }, []);
 
-    // Force cleanup of video elements
-    if (localVideoRef.current) {
-      localVideoRef.current.srcObject = null;
-      localVideoRef.current.pause();
-      localVideoRef.current.load();
-    }
-    if (remoteVideoRef.current) {
-      remoteVideoRef.current.srcObject = null;
-      remoteVideoRef.current.pause();
-      remoteVideoRef.current.load();
-    }
+  // Handle partner disconnection
+  useEffect(() => {
+    if (!socketRef.current) return;
 
-    // Add a small delay to ensure all cleanup operations are completed
-    setTimeout(() => {
-      // Navigate back to dashboard
-      navigate('/dashboard');
-    }, 300);
-  };
+    socketRef.current.on('partnerDisconnected', () => {
+      console.log('Partner disconnected');
+      setError('Your partner has disconnected');
+      handleEndCall();
+    });
+
+    return () => {
+      socketRef.current?.off('partnerDisconnected');
+    };
+  }, [handleEndCall]);
 
   const handleSendMessage = () => {
     if (!newMessage.trim() || !socketRef.current) return;
@@ -664,7 +559,7 @@ export default function VideoChat() {
         </div>
 
         {/* Find match button */}
-        {!isMatching && !remoteStream && (
+        {!isSearching && !remoteStream && (
           <button
             onClick={handleFindMatch}
             disabled={!isConnected || !localStream}
@@ -779,7 +674,7 @@ export default function VideoChat() {
         )}
 
         {/* Finding match overlay */}
-        {isMatching && (
+        {isSearching && (
           <div className="fixed inset-0 bg-black/80 flex items-center justify-center">
             <div className="text-center">
               <div className="animate-spin rounded-full h-16 w-16 border-4 border-blue-600 border-t-transparent mx-auto mb-4"></div>

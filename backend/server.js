@@ -205,6 +205,7 @@ io.on('connection', (socket) => {
     console.log('Request from user:', userId);
     console.log('Current waiting users:', Array.from(waitingUsers));
     console.log('Current active matches:', Array.from(activeMatches.entries()));
+    console.log('Active users:', Array.from(activeUsers.entries()));
     
     if (!userId) {
       console.error('No user ID in socket');
@@ -212,6 +213,7 @@ io.on('connection', (socket) => {
       return;
     }
     
+    // Check if user is already in waiting list
     if (waitingUsers.has(userId)) {
       console.log('User already in waiting list:', userId);
       socket.emit('error', { message: 'Already waiting for a match' });
@@ -219,13 +221,17 @@ io.on('connection', (socket) => {
     }
 
     // Check if user is already in a match
+    let userInMatch = false;
     for (const [roomId, match] of activeMatches.entries()) {
       if (match.user1 === userId || match.user2 === userId) {
         console.log('User already in a match:', userId);
         socket.emit('error', { message: 'Already in a match' });
-        return;
+        userInMatch = true;
+        break;
       }
     }
+
+    if (userInMatch) return;
 
     // Add user to waiting list
     waitingUsers.add(userId);
@@ -235,72 +241,83 @@ io.on('connection', (socket) => {
     // Try to find a match
     let matchFound = false;
     for (const potentialMatchId of waitingUsers) {
-      if (potentialMatchId !== userId) {
-        console.log('Attempting to match with:', potentialMatchId);
-        
-        // Get sockets for both users
-        const user1Socket = io.sockets.sockets.get(activeUsers.get(userId));
-        const user2Socket = io.sockets.sockets.get(activeUsers.get(potentialMatchId));
+      // Skip if trying to match with self
+      if (potentialMatchId === userId) continue;
 
-        if (!user1Socket || !user2Socket) {
-          console.error('Socket not found:', {
-            user1: { id: userId, hasSocket: !!user1Socket },
-            user2: { id: potentialMatchId, hasSocket: !!user2Socket }
-          });
-          continue; // Try next potential match
-        }
+      console.log('Attempting to match with:', potentialMatchId);
+      
+      // Get sockets for both users
+      const user1Socket = socket; // Use current socket for user1
+      const user2SocketId = activeUsers.get(potentialMatchId);
+      const user2Socket = io.sockets.sockets.get(user2SocketId);
 
-        // Remove both users from waiting list
-        waitingUsers.delete(userId);
+      console.log('Socket check:', {
+        user1: { id: userId, socketId: socket.id },
+        user2: { id: potentialMatchId, socketId: user2SocketId }
+      });
+
+      if (!user2Socket) {
+        console.error('Partner socket not found, removing from waiting list:', potentialMatchId);
         waitingUsers.delete(potentialMatchId);
-
-        // Create a room for the match
-        const roomId = `room_${Date.now()}`;
-        activeMatches.set(roomId, { user1: userId, user2: potentialMatchId });
-
-        // Join both users to the room
-        user1Socket.join(roomId);
-        user2Socket.join(roomId);
-
-        // Notify both users
-        console.log('=== Match Created ===');
-        console.log('Room ID:', roomId);
-        console.log('User 1:', userId);
-        console.log('User 2:', potentialMatchId);
-
-        user1Socket.emit('matchFound', { 
-          roomId, 
-          partnerId: potentialMatchId, 
-          isInitiator: true 
-        });
-        user2Socket.emit('matchFound', { 
-          roomId, 
-          partnerId: userId, 
-          isInitiator: false 
-        });
-
-        // Store match in database
-        try {
-          const { error } = await supabase
-            .from('matches')
-            .insert([{
-              room_id: roomId,
-              user1_id: userId,
-              user2_id: potentialMatchId,
-              status: 'active',
-              created_at: new Date().toISOString()
-            }]);
-
-          if (error) {
-            console.error('Error storing match in database:', error);
-          }
-        } catch (error) {
-          console.error('Database error:', error);
-        }
-
-        matchFound = true;
-        break;
+        continue;
       }
+
+      // Remove both users from waiting list
+      waitingUsers.delete(userId);
+      waitingUsers.delete(potentialMatchId);
+
+      // Create a room for the match
+      const roomId = `room_${Date.now()}_${userId}_${potentialMatchId}`;
+      activeMatches.set(roomId, { 
+        user1: userId, 
+        user2: potentialMatchId,
+        startTime: Date.now()
+      });
+
+      // Join both users to the room
+      user1Socket.join(roomId);
+      user2Socket.join(roomId);
+
+      // Notify both users
+      console.log('=== Match Created ===');
+      console.log('Room ID:', roomId);
+      console.log('User 1:', userId);
+      console.log('User 2:', potentialMatchId);
+
+      // Emit events to both users
+      io.to(user1Socket.id).emit('matchFound', { 
+        roomId, 
+        partnerId: potentialMatchId, 
+        isInitiator: true 
+      });
+      
+      io.to(user2Socket.id).emit('matchFound', { 
+        roomId, 
+        partnerId: userId, 
+        isInitiator: false 
+      });
+
+      // Store match in database
+      try {
+        const { error } = await supabase
+          .from('matches')
+          .insert([{
+            room_id: roomId,
+            user1_id: userId,
+            user2_id: potentialMatchId,
+            status: 'active',
+            created_at: new Date().toISOString()
+          }]);
+
+        if (error) {
+          console.error('Error storing match in database:', error);
+        }
+      } catch (error) {
+        console.error('Database error:', error);
+      }
+
+      matchFound = true;
+      break;
     }
 
     if (!matchFound) {
@@ -310,10 +327,36 @@ io.on('connection', (socket) => {
   });
 
   // Handle WebRTC signaling
-  socket.on('signal', ({ to, signal }) => {
-    const toSocket = io.sockets.sockets.get(activeUsers.get(to));
-    if (toSocket) {
-      toSocket.emit('signal', { from: userId, signal });
+  socket.on('signal', ({ to, signal, roomId }) => {
+    console.log('Received signal:', { from: userId, to, roomId });
+    
+    // Verify the users are in the same room
+    const match = activeMatches.get(roomId);
+    if (!match) {
+      console.error('Room not found:', roomId);
+      return;
+    }
+
+    if (match.user1 !== userId && match.user2 !== userId) {
+      console.error('User not in room:', userId);
+      return;
+    }
+
+    if (match.user1 !== to && match.user2 !== to) {
+      console.error('Target user not in room:', to);
+      return;
+    }
+
+    const toSocketId = activeUsers.get(to);
+    if (toSocketId) {
+      console.log('Forwarding signal to:', toSocketId);
+      io.to(toSocketId).emit('signal', { 
+        from: userId, 
+        signal,
+        roomId 
+      });
+    } else {
+      console.error('Target socket not found:', to);
     }
   });
 
