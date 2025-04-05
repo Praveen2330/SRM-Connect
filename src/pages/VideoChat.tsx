@@ -111,7 +111,7 @@ export default function VideoChat() {
       });
       setLocalStream(undefined);
     }
-    
+
     // Stop remote stream tracks
     if (remoteStream) {
       remoteStream.getTracks().forEach(track => {
@@ -226,31 +226,6 @@ export default function VideoChat() {
         const backendUrl = import.meta.env.VITE_BACKEND_URL;
         console.log('Connecting to backend at:', backendUrl);
 
-        // Try to ping the server first
-        try {
-          console.log('Pinging server attempt 1...');
-          const response = await fetch(`${backendUrl}/health`, {
-            mode: 'cors',
-            credentials: 'include',
-            headers: {
-              'Accept': 'application/json',
-              'Content-Type': 'application/json'
-            }
-          });
-          
-          if (response.ok) {
-            const data = await response.json();
-            console.log('Server health check response:', data);
-          } else {
-            console.error('Server health check failed:', response.status);
-            throw new Error(`Server health check failed: ${response.status}`);
-          }
-        } catch (error) {
-          console.error('Server ping failed:', error);
-          setError('Unable to connect to video chat server. Please check your connection and try again.');
-          return;
-        }
-
         // Initialize socket connection with retry logic
         const socket = io(backendUrl, {
           auth: {
@@ -264,12 +239,7 @@ export default function VideoChat() {
           reconnectionAttempts: 5,
           reconnectionDelay: 1000,
           reconnectionDelayMax: 5000,
-          timeout: 20000,
-          withCredentials: true,
-          forceNew: true,
-          extraHeaders: {
-            'Access-Control-Allow-Origin': window.location.origin
-          }
+          timeout: 20000
         });
 
         socket.on('connect', () => {
@@ -279,24 +249,25 @@ export default function VideoChat() {
           setError('');
         });
 
-        socket.on('connect_error', (error) => {
-          console.error('Socket connection error:', error);
-          setError(`Connection error: ${error.message}. Please try refreshing the page.`);
-          setIsConnected(false);
-        });
+        // Add signal handler at socket level
+        socket.on('signal', ({ from, signal, roomId: signalRoomId }) => {
+          console.log('Received signal:', {
+            from,
+            type: signal.type,
+            roomId: signalRoomId,
+            timestamp: new Date().toISOString()
+          });
 
-        socket.on('disconnect', (reason) => {
-          console.log('Socket disconnected:', reason);
-          setConnectionStatus(`Disconnected: ${reason}. Attempting to reconnect...`);
-          setIsConnected(false);
-          
-          // Handle specific disconnect reasons
-          if (reason === 'io server disconnect') {
-            // Server disconnected us, try to reconnect
-            socket.connect();
-          } else if (reason === 'transport close') {
-            // Connection lost, will automatically try to reconnect
-            setError('Connection lost. Attempting to reconnect...');
+          if (peerConnectionRef.current && !peerConnectionRef.current.destroyed) {
+            try {
+              peerConnectionRef.current.signal(signal);
+              console.log('Successfully applied received signal');
+            } catch (error) {
+              console.error('Error applying received signal:', error);
+              setError('Failed to process connection signal');
+            }
+          } else {
+            console.warn('Received signal but peer is not available');
           }
         });
 
@@ -366,8 +337,20 @@ export default function VideoChat() {
               credential: 'SrmConnect123'
             }
           ]
+        },
+        sdpTransform: (sdp) => {
+          // Add ICE restart support
+          sdp = sdp.replace(/a=ice-options:trickle\r\n/g, 'a=ice-options:trickle renomination\r\n');
+          // Increase UDP candidate priority
+          sdp = sdp.replace(/a=candidate:(\S*)\s+udp/gi, 'a=candidate:$1 udp 2130706431');
+          // Add bandwidth constraints
+          sdp = sdp.replace(/c=IN IP4.*\r\n/g, '$&b=AS:2000\r\n');
+          return sdp;
         }
       }) as ExtendedPeer;
+
+      // Store peer reference immediately
+      peerConnectionRef.current = peer;
 
       // Debug peer instance
       console.log('Peer instance created:', {
@@ -375,7 +358,13 @@ export default function VideoChat() {
         hasStream: !!mediaStream,
         streamTracks: mediaStream ? {
           audio: mediaStream.getAudioTracks().length,
-          video: mediaStream.getVideoTracks().length
+          video: mediaStream.getVideoTracks().length,
+          tracks: mediaStream.getTracks().map(t => ({
+            kind: t.kind,
+            enabled: t.enabled,
+            muted: t.muted,
+            readyState: t.readyState
+          }))
         } : null
       });
 
@@ -494,30 +483,92 @@ export default function VideoChat() {
         peer.on('stream', (incomingStream: MediaStream) => {
           console.log('Received remote stream:', {
             audioTracks: incomingStream.getAudioTracks().length,
-            videoTracks: incomingStream.getVideoTracks().length
+            videoTracks: incomingStream.getVideoTracks().length,
+            tracks: incomingStream.getTracks().map(t => ({
+              kind: t.kind,
+              enabled: t.enabled,
+              muted: t.muted,
+              readyState: t.readyState
+            }))
           });
           
           setRemoteStream(incomingStream);
+          
+          // Make sure we have a valid video element
           if (remoteVideoRef.current) {
+            console.log('Setting remote video source');
             remoteVideoRef.current.srcObject = incomingStream;
             
-            const playVideo = async (retryCount = 0) => {
-              try {
-                await remoteVideoRef.current?.play();
-                console.log('Remote video playing successfully');
-                setError('');
-              } catch (err) {
-                console.error('Error playing remote video:', err);
-                if (retryCount < 3) {
-                  console.log(`Retrying video play (attempt ${retryCount + 1}/3)...`);
-                  setTimeout(() => playVideo(retryCount + 1), 1000);
-                } else {
-                  setError('Failed to play remote video. Please check permissions.');
-                }
+            // Play with fallback
+            const playPromise = remoteVideoRef.current.play();
+            if (playPromise !== undefined) {
+              playPromise
+                .then(() => {
+                  console.log('Remote video playing successfully');
+                  setError('');
+                })
+                .catch(err => {
+                  console.error('Error playing remote video:', err);
+                  // Try again with user interaction
+                  const playButton = document.createElement('button');
+                  playButton.textContent = 'Click to enable video';
+                  playButton.className = 'absolute inset-0 bg-black/80 text-white flex items-center justify-center';
+                  playButton.onclick = () => {
+                    remoteVideoRef.current?.play();
+                    playButton.remove();
+                  };
+                  if (remoteVideoRef.current.parentNode) {
+                    remoteVideoRef.current.parentNode.appendChild(playButton);
+                  }
+                });
+            }
+          } else {
+            console.error('Remote video ref is null');
+            setError('Failed to display remote video');
+          }
+        });
+
+        // Add ICE connection state monitoring
+        peer.on('iceStateChange', (state) => {
+          console.log('ICE connection state changed:', {
+            state,
+            timestamp: new Date().toISOString(),
+            isReconnecting,
+            reconnectAttempts
+          });
+
+          switch (state) {
+            case 'checking':
+              setConnectionStatus(isReconnecting ? 'Reconnecting...' : 'Establishing connection...');
+              break;
+            case 'connected':
+            case 'completed':
+              setConnectionStatus('Connected to partner');
+              setError('');
+              isReconnecting = false;
+              reconnectAttempts = 0;
+              if (connectionTimeout) window.clearTimeout(connectionTimeout);
+              break;
+            case 'disconnected':
+              console.warn('ICE connection interrupted');
+              setConnectionStatus('Connection interrupted. Trying to reconnect...');
+              if (!isReconnecting) {
+                isReconnecting = true;
+                resetConnectionTimeout();
               }
-            };
-            
-            playVideo();
+              break;
+            case 'failed':
+              console.error('ICE connection failed');
+              if (reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
+                resetConnectionTimeout();
+              } else {
+                setError('Connection failed. Please try again.');
+                cleanupCall();
+              }
+              break;
+            case 'closed':
+              cleanupCall();
+              break;
           }
         });
       };
@@ -587,9 +638,9 @@ export default function VideoChat() {
     }
 
     // Clear remote video
-    if (remoteVideoRef.current) {
+      if (remoteVideoRef.current) {
       console.log('Clearing remote video element');
-      remoteVideoRef.current.srcObject = null;
+        remoteVideoRef.current.srcObject = null;
     }
 
     // Reset states
