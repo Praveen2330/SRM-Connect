@@ -524,8 +524,8 @@ export default function VideoChat() {
 
           if (!socketRef.current) {
             console.error('Socket not available when trying to send signal');
-            return;
-          }
+      return;
+    }
 
           try {
             socketRef.current.emit('signal', {
@@ -650,7 +650,7 @@ export default function VideoChat() {
     try {
       setIsSearching(true);
       setConnectionStatus('Looking for a match...');
-      setError('');
+    setError('');
     
       console.log('Emitting findMatch event');
       socketRef.current.emit('findMatch');
@@ -749,7 +749,7 @@ export default function VideoChat() {
     if (remoteVideoRef.current) {
       console.log('Clearing remote video element');
       try {
-        remoteVideoRef.current.srcObject = null;
+      remoteVideoRef.current.srcObject = null;
       } catch (e) {
         console.warn('Error clearing remote video:', e);
       }
