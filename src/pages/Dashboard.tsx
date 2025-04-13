@@ -125,8 +125,8 @@ function Dashboard() {
           <div className="bg-zinc-900 p-6 rounded-xl">
             <div className="flex flex-col items-center">
               <MessageCircle className="w-8 h-8 mb-4" />
-              <h2 className="text-xl font-bold mb-2">Messages</h2>
-              <p className="text-gray-400 text-center mb-4">View and respond to your messages</p>
+              <h2 className="text-xl font-bold mb-2">Instant Chat</h2>
+              <p className="text-gray-400 text-center mb-4">Chat with other users instantly</p>
               <Link 
                 to="/messages" 
                 className="w-full bg-zinc-900 border border-white py-2 rounded-lg font-semibold text-center hover:bg-zinc-800 transition-colors"

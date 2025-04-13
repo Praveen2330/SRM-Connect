@@ -49,41 +49,104 @@ export default function VideoChat() {
   const chatContainerRef = useRef<HTMLDivElement>(null);
   const peerConnectionRef = useRef<ExtendedPeer | null>(null);
 
-  // Reconnection state
-  const reconnectAttemptsRef = useRef(0);
-  const isReconnectingRef = useRef(false);
-  const MAX_RECONNECT_ATTEMPTS = 5;
-  const RECONNECT_DELAY = 1000;
-
   // Initialize media function with retries
   const initializeMedia = async (retryCount = 0) => {
     try {
       console.log('Requesting media permissions...');
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: true,
-        audio: true
+      
+      // First check if devices are available
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      const hasVideoInput = devices.some(device => device.kind === 'videoinput');
+      const hasAudioInput = devices.some(device => device.kind === 'audioinput');
+      
+      console.log('Available devices:', {
+        videoInputs: devices.filter(d => d.kind === 'videoinput').length,
+        audioInputs: devices.filter(d => d.kind === 'audioinput').length
       });
       
-      console.log('Media stream obtained:', {
-        audioTracks: stream.getAudioTracks().length,
-        videoTracks: stream.getVideoTracks().length
-      });
-
-      setLocalStream(stream);
-      if (localVideoRef.current) {
-        localVideoRef.current.srcObject = stream;
-        await localVideoRef.current.play();
-        console.log('Local video playing');
+      if (!hasVideoInput && !hasAudioInput) {
+        throw new Error('No camera or microphone detected on your device');
       }
-
-      return stream;
+      
+      // Try to get video and audio, but fall back to just audio if video fails
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({
+          video: true,
+          audio: true
+        });
+        
+        console.log('Media stream obtained:', {
+          audioTracks: stream.getAudioTracks().length,
+          videoTracks: stream.getVideoTracks().length
+        });
+        
+        setLocalStream(stream);
+        if (localVideoRef.current) {
+          localVideoRef.current.srcObject = stream;
+          try {
+            await localVideoRef.current.play();
+            console.log('Local video playing');
+            setError(''); // Clear any existing errors
+          } catch (playError) {
+            console.error('Error playing local video:', playError);
+            // Create play button for autoplay restriction
+            if (localVideoRef.current && localVideoRef.current.parentNode) {
+              const playButton = document.createElement('button');
+              playButton.textContent = 'Click to enable camera';
+              playButton.className = 'absolute inset-0 bg-black/80 text-white text-sm flex items-center justify-center z-10';
+              playButton.onclick = () => {
+                if (localVideoRef.current) {
+                  localVideoRef.current.play()
+                    .then(() => {
+                      playButton.remove();
+                      setError('');
+                    })
+                    .catch(err => {
+                      console.error('Play error after user interaction:', err);
+                      setError('Browser blocked video playback. Please refresh and try again.');
+                    });
+                }
+              };
+              localVideoRef.current.parentNode.appendChild(playButton);
+            }
+          }
+        }
+        
+        return stream;
+      } catch (videoError) {
+        // If video fails, try just audio
+        console.warn('Video access failed, trying audio only:', videoError);
+        const audioStream = await navigator.mediaDevices.getUserMedia({
+          video: false,
+          audio: true
+        });
+        
+        console.log('Audio-only stream obtained');
+        setLocalStream(audioStream);
+        setError('Camera access failed. Using audio only mode.');
+        return audioStream;
+      }
     } catch (error) {
       console.error('Media initialization error:', error);
-      setError('Failed to access camera/microphone. Please check permissions.');
+      
+      // Handle common permission errors
+      if (error instanceof DOMException) {
+        if (error.name === 'NotAllowedError') {
+          setError('Permission denied. Please allow camera/microphone access in your browser settings and refresh the page.');
+        } else if (error.name === 'NotFoundError') {
+          setError('No camera or microphone found. Please connect a device and refresh.');
+        } else if (error.name === 'NotReadableError' || error.name === 'AbortError') {
+          setError('Your camera or microphone is already in use by another application. Please close other apps and refresh.');
+        } else {
+          setError(`Failed to access camera/microphone: ${error.name}. Please check permissions and refresh.`);
+        }
+      } else {
+        setError('Failed to access camera/microphone. Please check permissions and refresh.');
+      }
       
       if (retryCount < 3) {
         console.log(`Retrying media initialization (attempt ${retryCount + 1}/3)...`);
-        await new Promise(resolve => setTimeout(resolve, 1000));
+        await new Promise(resolve => setTimeout(resolve, 1500));
         return initializeMedia(retryCount + 1);
       }
       
@@ -405,6 +468,8 @@ export default function VideoChat() {
       // Track connection state
       let isReconnecting = false;
       let reconnectAttempts = 0;
+      const MAX_RECONNECT_ATTEMPTS = 5;
+      const RECONNECT_DELAY = 1000;
 
       // Connection timeout handler with reconnection logic
       let connectionTimeout: number;
@@ -419,61 +484,40 @@ export default function VideoChat() {
             
             try {
               if (peer && !peer.destroyed) {
-                // Create a new peer connection before cleaning up the old one
+                // Close existing peer connection cleanly
+                if (peer._pc) {
+                  try {
+                    // Remove all tracks from peer connection
+                    const senders = peer._pc.getSenders();
+                    for (const sender of senders) {
+                      peer._pc.removeTrack(sender);
+                    }
+                    
+                    // Close the peer connection
+                    peer._pc.close();
+                  } catch (e) {
+                    console.warn('Error cleaning up peer connection:', e);
+                  }
+                }
+
+                // Create a new peer connection with the same configuration
                 const newPeer = new Peer({
                   initiator: isInitiator,
                   trickle: true,
                   stream: localStream,
-                  config: {
-                    iceServers: [
-                      { urls: 'stun:stun.l.google.com:19302' },
-                      { urls: 'stun:stun1.l.google.com:19302' },
-                      {
-                        urls: 'turn:a.relay.metered.ca:80',
-                        username: 'e22e928d6e75c7e3c3f3d4e1',
-                        credential: 'L+5qKEPF6GBvahB/'
-                      },
-                      {
-                        urls: 'turn:a.relay.metered.ca:443',
-                        username: 'e22e928d6e75c7e3c3f3d4e1',
-                        credential: 'L+5qKEPF6GBvahB/'
-                      },
-                      {
-                        urls: 'turn:a.relay.metered.ca:443?transport=tcp',
-                        username: 'e22e928d6e75c7e3c3f3d4e1',
-                        credential: 'L+5qKEPF6GBvahB/'
-                      }
-                    ],
-                    iceCandidatePoolSize: 10
-                  }
+                  config: peer._pc.getConfiguration()
                 }) as ExtendedPeer;
-
-                // Set up listeners for the new peer before destroying the old one
-                setupPeerListeners(newPeer);
-
-                // Clean up the old peer connection
-                try {
-                  if (peer._pc && peer._pc.signalingState !== 'closed') {
-                    const senders = peer._pc.getSenders();
-                    for (const sender of senders) {
-                      try {
-                        peer._pc.removeTrack(sender);
-                      } catch (e) {
-                        console.warn('Error removing track:', e);
-                      }
-                    }
-                    peer._pc.close();
-                  }
-                  peer.destroy();
-                } catch (e) {
-                  console.warn('Error cleaning up old peer:', e);
-                }
 
                 // Update the peer reference
                 peerConnectionRef.current = newPeer;
 
+                // Set up listeners for the new peer
+                setupPeerListeners(newPeer);
+
                 // Reset timeout for the new connection
                 resetConnectionTimeout();
+              } else {
+                throw new Error('Peer not available for reconnection');
               }
             } catch (error) {
               console.error('Error during reconnection attempt:', error);
@@ -696,7 +740,23 @@ export default function VideoChat() {
       try {
         const peer = peerConnectionRef.current;
         
-        // First remove all event listeners
+        // First, close the underlying RTCPeerConnection
+        if (peer._pc) {
+          try {
+            // Remove all tracks
+            const senders = peer._pc.getSenders();
+            for (const sender of senders) {
+              peer._pc.removeTrack(sender);
+            }
+            
+            // Close the connection
+            peer._pc.close();
+          } catch (e) {
+            console.warn('Error closing peer connection:', e);
+          }
+        }
+
+        // Remove event listeners one by one
         const events = ['signal', 'connect', 'error', 'close', 'stream'];
         for (const event of events) {
           try {
@@ -706,37 +766,10 @@ export default function VideoChat() {
           }
         }
 
-        // Then clean up the RTCPeerConnection
-        if (peer._pc && peer._pc.signalingState !== 'closed') {
-          try {
-            // Stop all transceivers
-            const transceivers = peer._pc.getTransceivers();
-            transceivers.forEach(transceiver => {
-              try {
-                transceiver.stop();
-              } catch (e) {
-                console.warn('Error stopping transceiver:', e);
-              }
-            });
+        // Set destroyed flag before actual destroy
+        peer.destroyed = true;
 
-            // Remove tracks
-            const senders = peer._pc.getSenders();
-            for (const sender of senders) {
-              try {
-                peer._pc.removeTrack(sender);
-              } catch (e) {
-                console.warn('Error removing track:', e);
-              }
-            }
-
-            // Close the connection
-            peer._pc.close();
-          } catch (e) {
-            console.warn('Error cleaning up RTCPeerConnection:', e);
-          }
-        }
-
-        // Finally destroy the peer
+        // Destroy the peer instance
         try {
           peer.destroy();
         } catch (e) {
@@ -785,7 +818,7 @@ export default function VideoChat() {
     if (remoteVideoRef.current) {
       console.log('Clearing remote video element');
       try {
-        remoteVideoRef.current.srcObject = null;
+      remoteVideoRef.current.srcObject = null;
       } catch (e) {
         console.warn('Error clearing remote video:', e);
       }
@@ -798,8 +831,6 @@ export default function VideoChat() {
     setLikes(0);
     setHasLiked(false);
     setIsSearching(false);
-    reconnectAttemptsRef.current = 0;
-    isReconnectingRef.current = false;
   }, [remoteStream]);
 
   // Handle end call

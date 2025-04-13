@@ -1,4 +1,5 @@
 import { createClient } from '@supabase/supabase-js';
+import { Database } from './database.types';
 
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
 const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
@@ -7,29 +8,51 @@ if (!supabaseUrl || !supabaseAnonKey) {
   throw new Error('Missing Supabase environment variables');
 }
 
-export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
+export const supabase = createClient<Database>(supabaseUrl, supabaseAnonKey, {
   auth: {
-    persistSession: true,
     autoRefreshToken: true,
-  },
-  global: {
-    headers: {
-      'Content-Type': 'application/json',
-      'Accept': 'application/json',
-      'Prefer': 'return=minimal'
-    },
+    persistSession: true,
+    detectSessionInUrl: true,
   },
 });
 
+// Types for profiles table
 export type Profile = {
   id: string;
   display_name: string | null;
-  bio: string | null;
-  interests: string[] | null;
   avatar_url: string | null;
-  is_online: boolean;
-  last_seen: string;
+  is_new_user: boolean;
+  has_accepted_rules: boolean;
+  created_at: string;
+  updated_at: string;
 };
+
+// Helper function to get user profile
+export async function getUserProfile(userId: string) {
+  const { data, error } = await supabase
+    .from('profiles')
+    .select('*')
+    .eq('id', userId)
+    .single();
+
+  if (error) throw error;
+  return data as Profile;
+}
+
+// Helper function to update user profile
+export async function updateUserProfile(userId: string, updates: Partial<Profile>) {
+  const { error } = await supabase
+    .from('profiles')
+    .update(updates)
+    .eq('id', userId);
+
+  if (error) throw error;
+}
+
+// Helper function to check if email is from SRM
+export function isSRMEmail(email: string): boolean {
+  return email.endsWith('@srmist.edu.in');
+}
 
 export type Match = {
   id: string;
