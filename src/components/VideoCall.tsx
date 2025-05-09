@@ -53,126 +53,142 @@ export default function VideoCall({ sessionId, userId, onEndCall }: VideoCallPro
 
     peer.on('signal', async data => {
       // Send the signal data to the other peer through Supabase
+      // In initializePeerConnection, modify peer.on('signal', ...)
+      peer.on('signal', async data => {
+        // Send the signal data to the other peer through Supabase
+        // Include sender ID to differentiate signals
+        await supabase
+          .from('video_sessions')
+          .update({
+            signal_data: {
+              senderId: userId, // Assuming userId is available in scope
+              signal: data
+            }
+          })
+          .eq('id', sessionId);
+      });
+
+      // In the subscription callback, modify the signal processing
+      if (session.signal_data && peer) {
+        // Check if the signal is from the other peer before applying
+        // Assuming session.signal_data is an object with senderId and signal properties
+        if (session.signal_data.senderId && session.signal_data.senderId !== userId) {
+          peer.signal(session.signal_data.signal);
+        }
+      }
+
+      peer.on('stream', stream => {
+        setRemoteStream(stream);
+        if (remoteVideoRef.current) {
+          remoteVideoRef.current.srcObject = stream;
+        }
+      });
+
+      peerRef.current = peer;
+
+      // Listen for the other peer's signal
+      const subscription = supabase
+        .channel(`video_session_${sessionId}`)
+        .on('postgres_changes', {
+          event: 'UPDATE',
+          schema: 'public',
+          table: 'video_sessions',
+          filter: `id=eq.${sessionId}`,
+        }, async (payload) => {
+          const session = payload.new as VideoSession;
+          if (session.signal_data && peer) {
+            peer.signal(session.signal_data);
+          }
+        })
+        .subscribe();
+
+      return () => {
+        subscription.unsubscribe();
+      };
+    };
+
+    const toggleMute = () => {
+      if (localStream) {
+        localStream.getAudioTracks().forEach(track => {
+          track.enabled = !track.enabled;
+        });
+        setIsMuted(!isMuted);
+      }
+    };
+
+    const toggleVideo = () => {
+      if (localStream) {
+        localStream.getVideoTracks().forEach(track => {
+          track.enabled = !track.enabled;
+        });
+        setIsVideoEnabled(!isVideoEnabled);
+      }
+    };
+
+    const handleEndCall = async () => {
+      localStream?.getTracks().forEach(track => track.stop());
+      peerRef.current?.destroy();
       await supabase
         .from('video_sessions')
-        .update({ signal_data: data })
+        .update({ status: 'ended', ended_at: new Date().toISOString() })
         .eq('id', sessionId);
-    });
-
-    peer.on('stream', stream => {
-      setRemoteStream(stream);
-      if (remoteVideoRef.current) {
-        remoteVideoRef.current.srcObject = stream;
-      }
-    });
-
-    peerRef.current = peer;
-
-    // Listen for the other peer's signal
-    const subscription = supabase
-      .channel(`video_session_${sessionId}`)
-      .on('postgres_changes', {
-        event: 'UPDATE',
-        schema: 'public',
-        table: 'video_sessions',
-        filter: `id=eq.${sessionId}`,
-      }, async (payload) => {
-        const session = payload.new as VideoSession;
-        if (session.signal_data && peer) {
-          peer.signal(session.signal_data);
-        }
-      })
-      .subscribe();
-
-    return () => {
-      subscription.unsubscribe();
+      onEndCall();
     };
-  };
 
-  const toggleMute = () => {
-    if (localStream) {
-      localStream.getAudioTracks().forEach(track => {
-        track.enabled = !track.enabled;
-      });
-      setIsMuted(!isMuted);
-    }
-  };
-
-  const toggleVideo = () => {
-    if (localStream) {
-      localStream.getVideoTracks().forEach(track => {
-        track.enabled = !track.enabled;
-      });
-      setIsVideoEnabled(!isVideoEnabled);
-    }
-  };
-
-  const handleEndCall = async () => {
-    localStream?.getTracks().forEach(track => track.stop());
-    peerRef.current?.destroy();
-    await supabase
-      .from('video_sessions')
-      .update({ status: 'ended', ended_at: new Date().toISOString() })
-      .eq('id', sessionId);
-    onEndCall();
-  };
-
-  return (
-    <div className="min-h-screen bg-black flex flex-col">
-      <div className="flex-1 relative">
-        {/* Remote Video */}
-        <video
-          ref={remoteVideoRef}
-          autoPlay
-          playsInline
-          className="w-full h-full object-cover"
-        />
-        
-        {/* Local Video Preview */}
-        <div className="absolute bottom-4 right-4 w-48 h-36 bg-zinc-900 rounded-lg overflow-hidden">
+    return (
+      <div className="min-h-screen bg-black flex flex-col">
+        <div className="flex-1 relative">
+          {/* Remote Video */}
           <video
-            ref={localVideoRef}
+            ref={remoteVideoRef}
             autoPlay
             playsInline
-            muted
             className="w-full h-full object-cover"
           />
+
+          {/* Local Video Preview */}
+          <div className="absolute bottom-4 right-4 w-48 h-36 bg-zinc-900 rounded-lg overflow-hidden">
+            <video
+              ref={localVideoRef}
+              autoPlay
+              playsInline
+              muted
+              className="w-full h-full object-cover"
+            />
+          </div>
+        </div>
+
+        {/* Controls */}
+        <div className="bg-zinc-900 p-4">
+          <div className="max-w-md mx-auto flex items-center justify-center gap-4">
+            <button
+              onClick={toggleMute}
+              className={`p-4 rounded-full ${isMuted ? 'bg-red-500' : 'bg-zinc-700'
+                } hover:opacity-80 transition-opacity`}
+            >
+              {isMuted ? <MicOff className="w-6 h-6" /> : <Mic className="w-6 h-6" />}
+            </button>
+
+            <button
+              onClick={handleEndCall}
+              className="p-4 bg-red-500 rounded-full hover:bg-red-600 transition-colors"
+            >
+              <PhoneOff className="w-6 h-6" />
+            </button>
+
+            <button
+              onClick={toggleVideo}
+              className={`p-4 rounded-full ${!isVideoEnabled ? 'bg-red-500' : 'bg-zinc-700'
+                } hover:opacity-80 transition-opacity`}
+            >
+              {isVideoEnabled ? (
+                <Video className="w-6 h-6" />
+              ) : (
+                <VideoOff className="w-6 h-6" />
+              )}
+            </button>
+          </div>
         </div>
       </div>
-
-      {/* Controls */}
-      <div className="bg-zinc-900 p-4">
-        <div className="max-w-md mx-auto flex items-center justify-center gap-4">
-          <button
-            onClick={toggleMute}
-            className={`p-4 rounded-full ${
-              isMuted ? 'bg-red-500' : 'bg-zinc-700'
-            } hover:opacity-80 transition-opacity`}
-          >
-            {isMuted ? <MicOff className="w-6 h-6" /> : <Mic className="w-6 h-6" />}
-          </button>
-
-          <button
-            onClick={handleEndCall}
-            className="p-4 bg-red-500 rounded-full hover:bg-red-600 transition-colors"
-          >
-            <PhoneOff className="w-6 h-6" />
-          </button>
-
-          <button
-            onClick={toggleVideo}
-            className={`p-4 rounded-full ${
-              !isVideoEnabled ? 'bg-red-500' : 'bg-zinc-700'
-            } hover:opacity-80 transition-opacity`}
-          >
-            {isVideoEnabled ? (
-              <Video className="w-6 h-6" />
-            ) : (
-              <VideoOff className="w-6 h-6" />
-            )}
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
+    );
+  }

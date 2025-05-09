@@ -8,13 +8,47 @@ if (!supabaseUrl || !supabaseAnonKey) {
   throw new Error('Missing Supabase environment variables');
 }
 
+// Create Supabase client with retry logic and better error handling
 export const supabase = createClient<Database>(supabaseUrl, supabaseAnonKey, {
   auth: {
     autoRefreshToken: true,
     persistSession: true,
     detectSessionInUrl: true,
+    storageKey: 'srm-connect-auth',
+    storage: window.localStorage,
+    flowType: 'pkce',
+  },
+  global: {
+    headers: {
+      'X-Client-Info': '@supabase/auth-ui-react@0.4.7',
+    },
+  },
+  db: {
+    schema: 'public'
   },
 });
+
+// Helper function to handle Supabase operations with retries
+async function withRetry<T>(
+  operation: () => Promise<T>,
+  retries = 3,
+  delay = 1000,
+  onError?: (error: Error | unknown, attempt: number) => void
+): Promise<T> {
+  for (let i = 0; i < retries; i++) {
+    try {
+      return await operation();
+    } catch (error) {
+      if (onError) {
+        onError(error, i + 1);
+      }
+      console.error(`Attempt ${i + 1}/${retries} failed:`, error);
+      if (i === retries - 1) throw error;
+      await new Promise(resolve => setTimeout(resolve, delay * (i + 1)));
+    }
+  }
+  throw new Error('All retry attempts failed');
+}
 
 // Types for profiles table
 export type Profile = {
@@ -27,26 +61,79 @@ export type Profile = {
   updated_at: string;
 };
 
-// Helper function to get user profile
-export async function getUserProfile(userId: string) {
-  const { data, error } = await supabase
-    .from('profiles')
-    .select('*')
-    .eq('id', userId)
-    .single();
+// Updated helper function with retry logic and better error handling
+export async function getUserProfile(userId: string): Promise<Profile> {
+  return withRetry(
+    async () => {
+      // First check if we have a valid session
+      const { data: { session }, error: sessionError } = await supabase.auth.getSession();
+      if (sessionError) {
+        throw new Error(`Authentication error: ${sessionError.message}`);
+      }
+      if (!session) {
+        throw new Error('No active session found');
+      }
 
-  if (error) throw error;
-  return data as Profile;
+      // Then fetch the profile
+      const { data, error } = await supabase
+        .from('profiles')
+        .select('*')
+        .eq('id', userId)
+        .single();
+
+      if (error) {
+        if (error.code === 'PGRST116') {
+          // Profile doesn't exist, create a new one
+          const { data: newProfile, error: createError } = await supabase
+            .from('profiles')
+            .insert([
+              {
+                id: userId,
+                display_name: session.user.email?.split('@')[0] || null,
+                is_new_user: true,
+                has_accepted_rules: false,
+              }
+            ])
+            .select()
+            .single();
+
+          if (createError) {
+            throw new Error(`Failed to create profile: ${createError.message}`);
+          }
+          return newProfile as Profile;
+        }
+        throw new Error(`Failed to fetch profile: ${error.message}`);
+      }
+
+      return data as Profile;
+    },
+    3,
+    1000,
+    (error, attempt) => {
+      console.error(`Failed to load profile (attempt ${attempt}/3):`, error);
+    }
+  );
 }
 
-// Helper function to update user profile
+// Updated helper function with retry logic
 export async function updateUserProfile(userId: string, updates: Partial<Profile>) {
-  const { error } = await supabase
-    .from('profiles')
-    .update(updates)
-    .eq('id', userId);
+  return withRetry(
+    async () => {
+      const { error } = await supabase
+        .from('profiles')
+        .update(updates)
+        .eq('id', userId);
 
-  if (error) throw error;
+      if (error) {
+        throw new Error(`Failed to update profile: ${error.message}`);
+      }
+    },
+    3,
+    1000,
+    (error, attempt) => {
+      console.error(`Failed to update profile (attempt ${attempt}/3):`, error);
+    }
+  );
 }
 
 // Helper function to check if email is from SRM

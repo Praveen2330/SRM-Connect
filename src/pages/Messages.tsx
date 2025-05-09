@@ -119,6 +119,7 @@ export default function Messages() {
           console.warn('Ping failed, server might be starting up:', pingError);
         }
         
+        // Socket.IO connection setup
         socketRef.current = io(backendUrl, {
           auth: {
             token: session.access_token
@@ -134,31 +135,27 @@ export default function Messages() {
           withCredentials: true
         });
 
-        // Connection event handlers
+        // Add socket connection status handlers
         socketRef.current.on('connect', () => {
           console.log('Socket connected successfully');
-          setConnectionStatus('connected');
+          setConnectionStatus('Connected');
+          toast.success('Connected to chat server');
         });
 
         socketRef.current.on('connect_error', (error) => {
           console.error('Socket connection error:', error);
-          console.error('Socket connection error details:', error.message);
-          setConnectionStatus('error');
-          toast.error('Failed to connect to chat server. Retrying...');
+          setConnectionStatus(`Connection error: ${error.message}`);
+          toast.error('Failed to connect to chat server');
         });
 
         socketRef.current.on('disconnect', (reason) => {
           console.log('Socket disconnected:', reason);
-          setConnectionStatus('disconnected');
-          if (reason === 'io server disconnect') {
-            // Server initiated disconnect, try to reconnect
-            socketRef.current?.connect();
-          }
+          setConnectionStatus(`Disconnected: ${reason}`);
+          toast.error('Disconnected from chat server');
         });
-
-        // Message event handlers
+        
+        // Real-time message event handlers
         socketRef.current.on('newMessage', (message: Message) => {
-          console.log('Received new message:', message);
           setConversations(prev => {
             const otherId = message.sender_id === currentUser?.id ? message.receiver_id : message.sender_id;
             const conversation = prev[otherId] || { userId: otherId, messages: [], profile: null };
@@ -832,26 +829,25 @@ export default function Messages() {
               <div className="space-y-2">
                 <h3 className="font-semibold text-sm text-gray-400 mb-2">Active Users</h3>
                 {activeUsers.length === 0 ? (
-                  <p className="text-gray-500 text-sm">No active users at the moment</p>
+                  <div className="text-center py-4 text-gray-400">
+                    No active users found
+                  </div>
                 ) : (
-                  activeUsers.map((user) => (
-                    <button
-                      key={user.id}
-                      onClick={() => startConversation(user.id)}
-                      className="w-full p-3 rounded-lg flex items-center gap-3 bg-zinc-800 hover:bg-zinc-700 transition-colors"
-                    >
-                      <ProfilePicture
-                        avatarUrl={user.avatar_url}
-                        size="sm"
-                      />
-                      <div className="text-left">
-                        <div className="font-semibold">
-                          {user.display_name || 'Anonymous'}
+                  <div className="space-y-2">
+                    {activeUsers.map((user) => (
+                      <button
+                        key={user.id}
+                        onClick={() => startConversation(user.id)}
+                        className="flex items-center gap-4 p-3 rounded-lg hover:bg-zinc-800 transition-colors"
+                      >
+                        <ProfilePicture avatarUrl={user.avatar_url} size="md" />
+                        <div>
+                          <h4 className="font-medium">{user.display_name || 'User'}</h4>
+                          <p className="text-sm text-gray-400">{user.bio || 'No bio'}</p>
                         </div>
-                        <div className="text-sm text-green-500">Online</div>
-                      </div>
-                    </button>
-                  ))
+                      </button>
+                    ))}
+                  </div>
                 )}
               </div>
             ) : (
@@ -965,7 +961,7 @@ export default function Messages() {
                   {user.avatar_url ? (
                     <img
                       src={user.avatar_url}
-                      alt={user.display_name}
+                      alt={user.display_name || 'User profile'}
                       className="w-full h-full rounded-full object-cover"
                     />
                   ) : (
@@ -983,4 +979,4 @@ export default function Messages() {
       )}
     </div>
   );
-} 
+}

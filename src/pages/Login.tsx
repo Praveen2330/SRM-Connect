@@ -46,50 +46,47 @@ function Login() {
           return;
         }
 
-        // Check if profile exists
-        const { data: profile, error: profileError } = await supabase
+        // Ensure profile exists
+        const { error: upsertError } = await supabase
           .from('profiles')
-          .select('*')
+          .upsert([
+            {
+              id: session.user.id,
+              display_name: session.user.user_metadata.full_name || session.user.email?.split('@')[0],
+              avatar_url: session.user.user_metadata.avatar_url,
+              is_online: false,
+              last_seen: new Date().toISOString()
+            }
+          ], { onConflict: 'id' })
+          .select()
+          .single();
+
+        if (upsertError) {
+          console.error('Error upserting profile:', upsertError);
+          throw upsertError;
+        }
+
+        // Check if profile is complete
+        const { data: userProfile } = await supabase
+          .from('profiles')
+          .select('bio, interests')
           .eq('id', session.user.id)
           .single();
 
-        if (profileError && profileError.code === 'PGRST116') {
-          // Create profile if it doesn't exist
-          const { error: createProfileError } = await supabase
-            .from('profiles')
-            .insert([
-              {
-                id: session.user.id,
-                display_name: session.user.user_metadata.full_name || session.user.email?.split('@')[0],
-                avatar_url: session.user.user_metadata.avatar_url,
-                is_new_user: true, // Add flag for new users
-              }
-            ]);
-
-          if (createProfileError) {
-            console.error('Error creating profile:', createProfileError);
-          }
-
-          toast.success('Account created successfully! Please complete your profile.');
-          navigate('/profile'); // Redirect new users to profile page first
+        if (!userProfile?.bio || !userProfile?.interests || userProfile.interests.length === 0) {
+          toast.success('Please complete your profile.');
+          navigate('/profile');
         } else {
-          // Check if user has completed profile and rules
-          const { data: userProfile } = await supabase
+          // Update online status
+          await supabase
             .from('profiles')
-            .select('is_new_user, has_accepted_rules')
-            .eq('id', session.user.id)
-            .single();
+            .update({ 
+              is_online: true,
+              last_seen: new Date().toISOString()
+            })
+            .eq('id', session.user.id);
 
-          if (userProfile?.is_new_user) {
-            if (!userProfile.has_accepted_rules) {
-              navigate('/rules'); // Redirect to rules if not accepted
-            } else {
-              navigate('/profile'); // Redirect to profile if rules accepted but profile incomplete
-            }
-          } else {
-            toast.success('Successfully logged in!');
-            navigate('/dashboard'); // Existing users go directly to dashboard
-          }
+          navigate('/dashboard');
         }
       }
     } catch (err) {
@@ -119,54 +116,52 @@ function Login() {
       if (signInError) throw signInError;
 
       if (authData?.user) {
-        // Fetch user profile
-        const { data: profile, error: profileError } = await supabase
+        // Ensure profile exists
+        const { error: upsertError } = await supabase
           .from('profiles')
-          .select('*')
+          .upsert([
+            {
+              id: authData.user.id,
+              display_name: displayName || email.split('@')[0],
+              is_online: false,
+              last_seen: new Date().toISOString()
+            }
+          ], { onConflict: 'id' })
+          .select()
+          .single();
+
+        if (upsertError) {
+          console.error('Error upserting profile:', upsertError);
+          throw upsertError;
+        }
+
+        // Check if profile is complete
+        const { data: userProfile } = await supabase
+          .from('profiles')
+          .select('bio, interests')
           .eq('id', authData.user.id)
           .single();
 
-        if (profileError) {
-          console.error('Error fetching profile:', profileError);
-          // Create profile if it doesn't exist
-          const { error: createProfileError } = await supabase
-            .from('profiles')
-            .insert([
-              {
-                id: authData.user.id,
-                display_name: email.split('@')[0],
-                is_new_user: true, // Add flag for new users
-              }
-            ]);
-
-          if (createProfileError) {
-            console.error('Error creating profile:', createProfileError);
-          }
-
-          toast.success('Account created successfully! Please complete your profile.');
-          navigate('/profile'); // Redirect new users to profile page first
+        if (!userProfile?.bio || !userProfile?.interests || userProfile.interests.length === 0) {
+          toast.success('Please complete your profile.');
+          navigate('/profile');
         } else {
-          // Check if user has completed profile and rules
-          if (profile.is_new_user) {
-            if (!profile.has_accepted_rules) {
-              navigate('/rules'); // Redirect to rules if not accepted
-            } else {
-              navigate('/profile'); // Redirect to profile if rules accepted but profile incomplete
-            }
-          } else {
-            toast.success('Successfully logged in!');
-            navigate('/dashboard'); // Existing users go directly to dashboard
-          }
+          // Update last seen and online status
+          await supabase
+            .from('profiles')
+            .update({ 
+              is_online: true,
+              last_seen: new Date().toISOString()
+            })
+            .eq('id', authData.user.id);
+
+          navigate('/dashboard');
         }
       }
-    } catch (err) {
-      console.error('Login error:', err);
-      if (err instanceof Error) {
-        if (err.message.includes('Invalid login credentials')) {
-          setError('Invalid email or password. Please try again.');
-        } else {
-          setError(err.message);
-        }
+    } catch (error) {
+      console.error('Login error:', error);
+      if (error instanceof Error) {
+        setError(error.message);
       } else {
         setError('An error occurred during login. Please try again.');
       }

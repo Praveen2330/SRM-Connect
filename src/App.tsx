@@ -1,5 +1,4 @@
-import React from 'react';
-import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
+import { BrowserRouter as Router, Routes, Route } from 'react-router-dom';
 import LandingPage from './pages/LandingPage';
 import Dashboard from './pages/Dashboard';
 import Login from './pages/Login';
@@ -8,6 +7,7 @@ import VideoChat from './pages/VideoChat';
 import Messages from './pages/Messages';
 import Settings from './pages/Settings';
 import Rules from './pages/Rules';
+import { AuthProvider } from './contexts/AuthContext';
 
 // 404 Page Component
 const NotFound = () => (
@@ -22,21 +22,23 @@ const NotFound = () => (
 
 function App() {
   return (
-    <Router>
-      <div className="min-h-screen bg-black text-white">
-        <Routes>
-          <Route path="/" element={<LandingPage />} />
-          <Route path="/login" element={<Login />} />
-          <Route path="/dashboard" element={<Dashboard />} />
-          <Route path="/profile" element={<Profile />} />
-          <Route path="/video-chat" element={<VideoChat />} />
-          <Route path="/messages" element={<Messages />} />
-          <Route path="/settings" element={<Settings />} />
-          <Route path="/rules" element={<Rules />} />
-          <Route path="*" element={<NotFound />} />
-        </Routes>
-      </div>
-    </Router>
+    <AuthProvider>
+      <Router>
+        <div className="min-h-screen bg-black text-white">
+          <Routes>
+            <Route path="/" element={<LandingPage />} />
+            <Route path="/login" element={<Login />} />
+            <Route path="/dashboard" element={<Dashboard />} />
+            <Route path="/profile" element={<Profile />} />
+            <Route path="/video-chat" element={<VideoChat />} />
+            <Route path="/messages" element={<Messages />} />
+            <Route path="/settings" element={<Settings />} />
+            <Route path="/rules" element={<Rules />} />
+            <Route path="*" element={<NotFound />} />
+          </Routes>
+        </div>
+      </Router>
+    </AuthProvider>
   );
 }
 

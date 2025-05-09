@@ -1,16 +1,25 @@
 import React, { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
-import { Camera, Loader2 } from 'lucide-react';
+import { Camera, Loader2, ArrowLeft } from 'lucide-react';
 import ProfilePicture from '../components/ProfilePicture';
 
 interface Profile {
   id: string;
-  name: string | null;
+  display_name: string | null;
   bio: string | null;
   interests: string[] | null;
   avatar_url: string | null;
+  is_new_user: boolean;
+  has_accepted_rules: boolean;
+  is_online: boolean;
+  last_seen: string | null;
+  created_at: string;
   updated_at: string;
+  language: string;
+  age: number;
+  gender: string;
+  gender_preference: string;
 }
 
 export default function Profile() {
@@ -45,13 +54,22 @@ export default function Profile() {
         console.error('Supabase error:', error);
         // If the profile doesn't exist, create a new one
         if (error.code === 'PGRST116') {
-          const newProfile = {
+          const newProfile: Profile = {
             id: user.id,
-            name: '',
+            display_name: '',
             bio: '',
             interests: [],
             avatar_url: null,
-            updated_at: new Date().toISOString()
+            is_new_user: true,
+            has_accepted_rules: false,
+            is_online: false,
+            last_seen: null,
+            created_at: new Date().toISOString(),
+            updated_at: new Date().toISOString(),
+            language: 'en',
+            age: 25,
+            gender: 'any',
+            gender_preference: 'any'
           };
 
           const { error: insertError } = await supabase
@@ -72,11 +90,20 @@ export default function Profile() {
       console.log('Profile loaded:', data);
       setProfile(data || {
         id: user.id,
-        name: '',
+        display_name: '',
         bio: '',
         interests: [],
         avatar_url: null,
-        updated_at: new Date().toISOString()
+        is_new_user: true,
+        has_accepted_rules: false,
+        is_online: false,
+        last_seen: null,
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+        language: 'en',
+        age: 25,
+        gender: 'any',
+        gender_preference: 'any'
       });
     } catch (error) {
       console.error('Error loading profile:', error);
@@ -168,20 +195,34 @@ export default function Profile() {
 
       setLoading(true);
       
+      // Clean up interests array - split by comma, trim whitespace, filter empty strings
+      const cleanedInterests = profile.interests 
+        ? (typeof profile.interests === 'string' 
+            ? (profile.interests as string).split(',').map((i: string) => i.trim()).filter(Boolean)
+            : profile.interests.filter(Boolean))
+        : [];
+      
       const profileData = {
         id: user.id,
-        name: profile.name || '',
+        display_name: profile.display_name || '',
         bio: profile.bio || '',
-        interests: profile.interests || [],
+        interests: cleanedInterests,
+        language: profile.language || 'en',
+        age: profile.age || 25,
+        gender: profile.gender || 'any',
+        gender_preference: profile.gender_preference || 'any',
         updated_at: new Date().toISOString()
       };
       
-      // Use upsert instead of update/insert
       const { error } = await supabase
         .from('profiles')
-        .upsert(profileData);
+        .update(profileData)
+        .eq('id', user.id);
 
       if (error) throw error;
+
+      // Update local state with cleaned interests
+      setProfile(prev => prev ? { ...prev, interests: cleanedInterests } : null);
 
       setError('Profile updated successfully!');
       setTimeout(() => setError(null), 3000);
@@ -204,6 +245,15 @@ export default function Profile() {
   return (
     <div className="min-h-screen bg-black text-white">
       <div className="container mx-auto px-4 py-8">
+        {/* Back Button */}
+        <button
+          onClick={() => navigate('/dashboard')}
+          className="mb-6 p-2 hover:bg-zinc-900 rounded-full transition-colors"
+          aria-label="Back to Dashboard"
+        >
+          <ArrowLeft className="w-6 h-6" />
+        </button>
+
         <div className="max-w-2xl mx-auto">
           <h1 className="text-3xl font-bold mb-8">Your Profile</h1>
 
@@ -246,8 +296,8 @@ export default function Profile() {
               </label>
               <input
                 type="text"
-                value={profile?.name || ''}
-                onChange={e => setProfile(prev => prev ? { ...prev, name: e.target.value } : null)}
+                value={profile?.display_name || ''}
+                onChange={e => setProfile(prev => prev ? { ...prev, display_name: e.target.value } : null)}
                 className="w-full bg-zinc-900 rounded-lg px-4 py-2 focus:outline-none focus:ring-2 focus:ring-blue-600"
                 placeholder="Enter your display name"
               />
@@ -266,6 +316,76 @@ export default function Profile() {
               />
             </div>
 
+            {/* Language */}
+            <div>
+              <label className="block text-sm font-medium mb-2">
+                Preferred Language
+              </label>
+              <select
+                value={profile?.language || 'en'}
+                onChange={e => setProfile(prev => prev ? { ...prev, language: e.target.value } : null)}
+                className="w-full bg-zinc-900 rounded-lg px-4 py-2 focus:outline-none focus:ring-2 focus:ring-blue-600"
+              >
+                <option value="en">English</option>
+                <option value="ta">Tamil</option>
+                <option value="te">Telugu</option>
+                <option value="ml">Malayalam</option>
+                <option value="kn">Kannada</option>
+                <option value="hi">Hindi</option>
+              </select>
+            </div>
+
+            {/* Age */}
+            <div>
+              <label className="block text-sm font-medium mb-2">
+                Age
+              </label>
+              <input
+                type="number"
+                min="18"
+                max="100"
+                value={profile?.age || ''}
+                onChange={e => setProfile(prev => prev ? { ...prev, age: parseInt(e.target.value) || 25 } : null)}
+                className="w-full bg-zinc-900 rounded-lg px-4 py-2 focus:outline-none focus:ring-2 focus:ring-blue-600"
+              />
+            </div>
+
+            {/* Gender */}
+            <div>
+              <label className="block text-sm font-medium mb-2">
+                Gender
+              </label>
+              <select
+                value={profile?.gender || 'any'}
+                onChange={e => setProfile(prev => prev ? { ...prev, gender: e.target.value } : null)}
+                className="w-full bg-zinc-900 rounded-lg px-4 py-2 focus:outline-none focus:ring-2 focus:ring-blue-600"
+              >
+                <option value="any">Any</option>
+                <option value="male">Male</option>
+                <option value="female">Female</option>
+                <option value="non-binary">Non-binary</option>
+                <option value="prefer-not-to-say">Prefer not to say</option>
+              </select>
+            </div>
+
+            {/* Gender Preference */}
+            <div>
+              <label className="block text-sm font-medium mb-2">
+                Preferred Gender to Match With
+              </label>
+              <select
+                value={profile?.gender_preference || 'any'}
+                onChange={e => setProfile(prev => prev ? { ...prev, gender_preference: e.target.value } : null)}
+                className="w-full bg-zinc-900 rounded-lg px-4 py-2 focus:outline-none focus:ring-2 focus:ring-blue-600"
+              >
+                <option value="any">Any</option>
+                <option value="male">Male</option>
+                <option value="female">Female</option>
+                <option value="non-binary">Non-binary</option>
+                <option value="prefer-not-to-say">Prefer not to say</option>
+              </select>
+            </div>
+
             {/* Interests */}
             <div>
               <label className="block text-sm font-medium mb-2">
@@ -274,13 +394,32 @@ export default function Profile() {
               <input
                 type="text"
                 value={profile?.interests?.join(', ') || ''}
-                onChange={e => setProfile(prev => prev ? { 
-                  ...prev, 
-                  interests: e.target.value.split(',').map(i => i.trim()).filter(Boolean)
-                } : null)}
+                onChange={(e: React.ChangeEvent<HTMLInputElement>) => {
+                  const value = e.target.value;
+                  setProfile(prev => {
+                    if (!prev) return null;
+                    return {
+                      ...prev,
+                      interests: value === '' ? [] : [value]
+                    };
+                  });
+                }}
+                onBlur={(e: React.ChangeEvent<HTMLInputElement>) => {
+                  const value = e.target.value;
+                  setProfile(prev => {
+                    if (!prev) return null;
+                    return {
+                      ...prev,
+                      interests: value ? value.split(',').map(i => i.trim()).filter(Boolean) : []
+                    };
+                  });
+                }}
                 className="w-full bg-zinc-900 rounded-lg px-4 py-2 focus:outline-none focus:ring-2 focus:ring-blue-600"
                 placeholder="e.g., Music, Sports, Technology (comma-separated)"
               />
+              <p className="mt-1 text-sm text-gray-400">
+                Type your interests freely. Use commas to separate different interests.
+              </p>
             </div>
 
             {/* Submit Button */}

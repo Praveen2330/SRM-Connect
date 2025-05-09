@@ -7,57 +7,109 @@ drop trigger if exists on_profile_updated on profiles;
 drop function if exists public.handle_new_user() cascade;
 drop function if exists public.handle_updated_at() cascade;
 
+-- Drop existing objects if they exist
+DROP TRIGGER IF EXISTS on_auth_user_created ON auth.users CASCADE;
+DROP FUNCTION IF EXISTS handle_new_user CASCADE;
+DROP POLICY IF EXISTS "Users can view their own profile" ON public.profiles CASCADE;
+DROP POLICY IF EXISTS "Users can update their own profile" ON public.profiles CASCADE;
+DROP TABLE IF EXISTS public.profiles CASCADE;
+DROP TABLE IF EXISTS public.likes CASCADE;
+DROP TABLE IF EXISTS public.matches CASCADE;
+DROP TABLE IF EXISTS public.reports CASCADE;
+
 -- Create profiles table
-create table if not exists public.profiles (
-    id uuid references auth.users on delete cascade primary key,
-    display_name text unique,
-    avatar_url text,
-    is_new_user boolean default true,
-    has_accepted_rules boolean default false,
-    created_at timestamp with time zone default timezone('utc'::text, now()) not null,
-    updated_at timestamp with time zone default timezone('utc'::text, now()) not null
+CREATE TABLE public.profiles (
+    id UUID REFERENCES auth.users ON DELETE CASCADE PRIMARY KEY,
+    display_name TEXT,
+    avatar_url TEXT,
+    is_new_user BOOLEAN DEFAULT TRUE,
+    has_accepted_rules BOOLEAN DEFAULT FALSE,
+    is_online BOOLEAN DEFAULT FALSE,
+    last_seen TIMESTAMP WITH TIME ZONE,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL
+);
+
+-- Create likes table
+CREATE TABLE public.likes (
+    id UUID DEFAULT uuid_generate_v4() PRIMARY KEY,
+    from_user_id UUID REFERENCES public.profiles(id) ON DELETE CASCADE,
+    to_user_id UUID REFERENCES public.profiles(id) ON DELETE CASCADE,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL,
+    UNIQUE(from_user_id, to_user_id)
+);
+
+-- Create matches table
+CREATE TABLE public.matches (
+    id UUID DEFAULT uuid_generate_v4() PRIMARY KEY,
+    user1_id UUID REFERENCES public.profiles(id) ON DELETE CASCADE,
+    user2_id UUID REFERENCES public.profiles(id) ON DELETE CASCADE,
+    status TEXT CHECK (status IN ('active', 'ended', 'blocked')) DEFAULT 'active',
+    matched_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL,
+    ended_at TIMESTAMP WITH TIME ZONE,
+    UNIQUE(user1_id, user2_id)
+);
+
+-- Create reports table
+CREATE TABLE public.reports (
+    id UUID DEFAULT uuid_generate_v4() PRIMARY KEY,
+    reporter_id UUID REFERENCES public.profiles(id) ON DELETE CASCADE,
+    reported_id UUID REFERENCES public.profiles(id) ON DELETE CASCADE,
+    reason TEXT NOT NULL,
+    status TEXT CHECK (status IN ('pending', 'resolved', 'dismissed')) DEFAULT 'pending',
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL,
+    resolved_at TIMESTAMP WITH TIME ZONE,
+    admin_notes TEXT
 );
 
 -- Enable Row Level Security
-alter table public.profiles enable row level security;
+ALTER TABLE public.profiles ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.likes ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.matches ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.reports ENABLE ROW LEVEL SECURITY;
 
--- Drop existing policies if they exist
-drop policy if exists "Public profiles are viewable by everyone" on profiles;
-drop policy if exists "Users can insert their own profile" on profiles;
-drop policy if exists "Users can update their own profile" on profiles;
+-- Create policies
+CREATE POLICY "Users can view their own profile"
+    ON public.profiles FOR SELECT
+    USING (auth.uid() = id);
 
--- Create profiles policies
-create policy "Public profiles are viewable by everyone"
-    on profiles for select
-    using ( true );
+CREATE POLICY "Users can update their own profile"
+    ON public.profiles FOR UPDATE
+    USING (auth.uid() = id);
 
-create policy "Users can insert their own profile"
-    on profiles for insert
-    with check ( auth.uid() = id );
+CREATE POLICY "Users can view their likes"
+    ON public.likes FOR SELECT
+    USING (auth.uid() IN (from_user_id, to_user_id));
 
-create policy "Users can update their own profile"
-    on profiles for update
-    using ( auth.uid() = id );
+CREATE POLICY "Users can create likes"
+    ON public.likes FOR INSERT
+    WITH CHECK (auth.uid() = from_user_id);
 
--- Create function to handle user creation
-create function public.handle_new_user()
-returns trigger as $$
-begin
-    insert into public.profiles (id, display_name, avatar_url, is_new_user)
-    values (
-        new.id,
-        coalesce(new.raw_user_meta_data->>'name', split_part(new.email, '@', 1)),
-        new.raw_user_meta_data->>'avatar_url',
-        true
-    );
-    return new;
-end;
-$$ language plpgsql security definer;
+CREATE POLICY "Users can view their matches"
+    ON public.matches FOR SELECT
+    USING (auth.uid() IN (user1_id, user2_id));
 
--- Create trigger for new user creation
-create trigger on_auth_user_created
-    after insert on auth.users
-    for each row execute procedure public.handle_new_user();
+CREATE POLICY "Users can create reports"
+    ON public.reports FOR INSERT
+    WITH CHECK (auth.uid() = reporter_id);
+
+-- Function to handle new user creation
+CREATE OR REPLACE FUNCTION public.handle_new_user()
+RETURNS trigger
+LANGUAGE plpgsql
+SECURITY DEFINER SET search_path = public
+AS $$
+BEGIN
+    INSERT INTO public.profiles (id)
+    VALUES (new.id);
+    RETURN new;
+END;
+$$;
+
+-- Trigger for new user creation
+CREATE TRIGGER on_auth_user_created
+    AFTER INSERT ON auth.users
+    FOR EACH ROW EXECUTE PROCEDURE public.handle_new_user();
 
 -- Create function to update timestamps
 create function public.handle_updated_at()

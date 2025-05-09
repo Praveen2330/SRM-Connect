@@ -1,9 +1,41 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { ArrowLeft } from 'lucide-react';
+import { ArrowLeft, Loader2 } from 'lucide-react';
+import { supabase } from '../lib/supabase';
 
 function Rules() {
   const navigate = useNavigate();
+  const [loading, setLoading] = useState(false);
+
+  const handleAgree = async () => {
+    try {
+      setLoading(true);
+      const { data: { user } } = await supabase.auth.getUser();
+      
+      if (!user) {
+        navigate('/login');
+        return;
+      }
+
+      // Update the profile to mark rules as accepted
+      const { error } = await supabase
+        .from('profiles')
+        .update({ 
+          has_accepted_rules: true,
+          updated_at: new Date().toISOString()
+        })
+        .eq('id', user.id);
+
+      if (error) throw error;
+
+      // Navigate to profile page after accepting rules
+      navigate('/profile');
+    } catch (error) {
+      console.error('Error accepting rules:', error);
+    } finally {
+      setLoading(false);
+    }
+  };
 
   return (
     <div className="min-h-screen bg-black text-white p-8">
@@ -113,6 +145,25 @@ function Rules() {
               <li>Avoid spamming, advertising, or promoting outside content.</li>
             </ul>
           </div>
+        </div>
+
+        {/* I Agree Button Section */}
+        <div className="mt-12 flex flex-col items-center">
+          <p className="text-gray-400 mb-4 text-center max-w-lg">
+            By clicking "I Agree", you acknowledge that you have read and understood our rules and regulations, 
+            and agree to abide by them while using SRM Connect.
+          </p>
+          <button
+            onClick={handleAgree}
+            disabled={loading}
+            className="bg-blue-600 hover:bg-blue-700 text-white font-semibold py-3 px-8 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            {loading ? (
+              <Loader2 className="w-5 h-5 animate-spin mx-auto" />
+            ) : (
+              'I Agree'
+            )}
+          </button>
         </div>
       </div>
     </div>

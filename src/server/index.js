@@ -2,157 +2,250 @@ import express from 'express';
 import { createServer } from 'http';
 import { Server } from 'socket.io';
 import cors from 'cors';
-import helmet from 'helmet';
-import rateLimit from 'express-rate-limit';
-import { supabase } from '../lib/supabase.js';
 
 const app = express();
-const httpServer = createServer(app);
-const io = new Server(httpServer, {
+
+// Configure CORS
+app.use(cors({
+  origin: ['http://localhost:3000', 'http://localhost:5173', 'http://localhost:5174'],
+  credentials: true
+}));
+
+// Handle Vite HMR requests
+app.get('/vite.svg', (req, res) => {
+  res.status(204).end();
+});
+
+// Basic route for health check
+app.get('/', (req, res) => {
+  res.json({ status: 'ok' });
+});
+
+// Socket.io path route
+app.get('/socket.io/', (req, res) => {
+  res.json({ status: 'socket.io endpoint' });
+});
+
+const server = createServer(app);
+const io = new Server(server, {
   cors: {
-    origin: process.env.NODE_ENV === 'production' 
-      ? 'https://your-domain.com' 
-      : 'http://localhost:5173',
+    origin: ['http://localhost:3002', 'http://localhost:5174'],
     methods: ['GET', 'POST']
   }
 });
 
-// Middleware
-app.use(cors());
-app.use(helmet());
-app.use(express.json());
-app.use(rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 100 // limit each IP to 100 requests per windowMs
-}));
+// Store active users, their profiles and sockets
+const activeUsers = new Map(); // userId -> socket
+const userProfiles = new Map(); // userId -> profile data
+const userQueue = new Set(); // Set of userIds in queue
 
-// WebSocket handling for real-time features
 io.on('connection', (socket) => {
-  console.log('Client connected:', socket.id);
+  console.log('User connected:', socket.id);
+  let userId = null;
 
-  // Handle video chat matching
-  socket.on('find_match', async (userData) => {
-    try {
-      // Find a suitable match based on preferences
-      const { data: potentialMatches, error } = await supabase
-        .from('profiles')
-        .select('*')
-        .neq('id', userData.userId)
-        .eq('is_online', true)
-        .limit(1);
+  // Log authentication token
+  const token = socket.handshake.auth.token;
+  console.log('Auth token received:', token ? 'Yes' : 'No');
 
-      if (error) throw error;
+  // Log transport type
+  console.log('Transport type:', socket.conn.transport.name);
 
-      if (potentialMatches?.length > 0) {
-        const match = potentialMatches[0];
-        // Create a video session
-        const { data: session, error: sessionError } = await supabase
-          .from('video_sessions')
-          .insert([{
-            user1_id: userData.userId,
-            user2_id: match.id,
-            status: 'pending'
-          }])
-          .select()
-          .single();
+  socket.on('join_queue', (data) => {
+    userId = data.userId;
+    console.log('Received join_queue from:', userId);
+    
+    if (!userId) {
+      console.log('No userId provided');
+      return;
+    }
 
-        if (sessionError) throw sessionError;
+    // Store user profile information
+    const userProfile = {
+      id: data.userId,
+      name: data.email || 'Anonymous',
+      display_name: data.displayName || 'Anonymous User',
+      email: data.email
+    };
+    
+    // Store the profile
+    userProfiles.set(userId, userProfile);
+    console.log(`Stored profile for ${userId}:`, userProfile);
 
-        // Notify both users
-        io.to(socket.id).emit('match_found', { sessionId: session.id, match });
-        socket.to(match.id).emit('match_found', { sessionId: session.id, match: userData });
-      } else {
-        socket.emit('no_match_found');
+    // Remove user from any existing matches
+    if (activeUsers.has(userId)) {
+      console.log(`User ${userId} already in active users, cleaning up...`);
+      const oldSocket = activeUsers.get(userId);
+      oldSocket.disconnect();
+      activeUsers.delete(userId);
+      userQueue.delete(userId);
+    }
+
+    // Add user to active users and queue
+    activeUsers.set(userId, socket);
+    userQueue.add(userId);
+
+    console.log(`User ${userId} joined queue`);
+    console.log('Active users:', Array.from(activeUsers.keys()));
+    console.log('Current queue:', Array.from(userQueue));
+    
+    // Try to find a match
+    findMatch();
+  });
+
+  socket.on('chat_message', (data) => {
+    const { message, to } = data;
+    if (!message || !to) return;
+
+    const recipientSocket = activeUsers.get(to);
+    if (recipientSocket) {
+      recipientSocket.emit('chat_message', {
+        message,
+        from: userId
+      });
+    }
+  });
+
+  socket.on('offer', (data) => {
+    console.log('Received offer:', data);
+    const recipientSocket = activeUsers.get(data.to);
+    if (recipientSocket) {
+      // Pass the offer exactly as received to maintain proper structure
+      recipientSocket.emit('offer', data.offer);
+      console.log('Forwarded offer to', data.to);
+    } else {
+      console.log('Recipient socket not found for', data.to);
+    }
+  });
+
+  socket.on('leave_queue', () => {
+    if (userId) {
+      userQueue.delete(userId);
+      console.log('User left queue:', userId);
+    }
+  });
+
+  socket.on('disconnect', () => {
+    if (userId) {
+      userQueue.delete(userId);
+      activeUsers.delete(userId);
+      console.log(`User ${userId} disconnected`);
+      console.log('Current queue:', Array.from(userQueue));
+    }
+  });
+
+  // Handle WebRTC signaling
+  socket.on('answer', (data) => {
+    console.log('Received answer:', data);
+    const recipientSocket = activeUsers.get(data.to);
+    if (recipientSocket) {
+      // Pass the answer exactly as received to maintain proper structure
+      recipientSocket.emit('answer', data.answer);
+      console.log('Forwarded answer to', data.to);
+    } else {
+      console.log('Recipient socket not found for', data.to);
+    }
+  });
+
+  socket.on('ice-candidate', (data) => {
+    console.log('Received ICE candidate');
+    const recipientSocket = activeUsers.get(data.to);
+    if (recipientSocket) {
+      recipientSocket.emit('ice-candidate', data.candidate);
+      console.log('Forwarded ICE candidate to', data.to);
+    } else {
+      console.log('Recipient socket not found for', data.to);
+    }
+  });
+
+  socket.on('end_call', (data) => {
+    const partnerSocket = activeUsers.get(data.partnerId);
+    if (partnerSocket) {
+      partnerSocket.emit('call_ended');
+    }
+  });
+
+  socket.on('next_match', (data) => {
+    const partnerSocket = activeUsers.get(data.partnerId);
+    if (partnerSocket) {
+      partnerSocket.emit('call_ended');
+    }
+    if (userId) {
+      userQueue.add(userId);
+      findMatch(userId);
+    }
+  });
+
+  socket.on('report_user', (data) => {
+    console.log('User reported:', data);
+    // TODO: Implement report handling
+  });
+});
+
+// Function to find a match for a user
+const findMatch = () => {
+  console.log('Finding match... Queue size:', userQueue.size);
+  console.log('Users in queue:', Array.from(userQueue));
+  
+  if (userQueue.size >= 2) {
+    const users = Array.from(userQueue);
+    const user1 = users[0];
+    const user2 = users[1];
+
+    console.log(`Attempting to match ${user1} with ${user2}`);
+
+    const socket1 = activeUsers.get(user1);
+    const socket2 = activeUsers.get(user2);
+
+    if (socket1 && socket2) {
+      console.log(`Found valid sockets for both users, creating match`);
+      
+      // Remove from queue first
+      userQueue.delete(user1);
+      userQueue.delete(user2);
+
+      // Get user profiles
+      const profile1 = userProfiles.get(user1) || { id: user1, name: 'Unknown User' };
+      const profile2 = userProfiles.get(user2) || { id: user2, name: 'Unknown User' };
+      
+      console.log('Sending match with profiles:', profile1, profile2);
+      
+      // Notify both users of the match with profile information
+      socket1.emit('match_found', {
+        partnerId: user2,
+        isInitiator: true,
+        partnerProfile: profile2
+      });
+      socket2.emit('match_found', {
+        partnerId: user1,
+        isInitiator: false,
+        partnerProfile: profile1
+      });
+
+      console.log('Match created and notifications sent');
+      console.log('Remaining queue:', Array.from(userQueue));
+    } else {
+      console.log('Some sockets not found:');
+      console.log('socket1:', !!socket1);
+      console.log('socket2:', !!socket2);
+
+      // If sockets are not found, clean up
+      if (!socket1) {
+        console.log(`Cleaning up invalid user ${user1}`);
+        userQueue.delete(user1);
+        activeUsers.delete(user1);
       }
-    } catch (error) {
-      console.error('Error in match finding:', error);
-      socket.emit('error', { message: 'Failed to find match' });
+      if (!socket2) {
+        console.log(`Cleaning up invalid user ${user2}`);
+        userQueue.delete(user2);
+        activeUsers.delete(user2);
+      }
     }
-  });
-
-  // Handle chat messages
-  socket.on('send_message', async (messageData) => {
-    try {
-      const { data: message, error } = await supabase
-        .from('messages')
-        .insert([{
-          match_id: messageData.matchId,
-          sender_id: messageData.senderId,
-          content: messageData.content
-        }])
-        .select()
-        .single();
-
-      if (error) throw error;
-
-      // Broadcast message to the recipient
-      socket.to(messageData.recipientId).emit('new_message', message);
-    } catch (error) {
-      console.error('Error sending message:', error);
-      socket.emit('error', { message: 'Failed to send message' });
-    }
-  });
-
-  // Handle video chat signaling
-  socket.on('signal', (data) => {
-    socket.to(data.recipientId).emit('signal', {
-      signal: data.signal,
-      senderId: socket.id
-    });
-  });
-
-  socket.on('disconnect', async () => {
-    try {
-      // Update user's online status
-      await supabase
-        .from('profiles')
-        .update({ 
-          is_online: false,
-          last_seen: new Date().toISOString()
-        })
-        .eq('id', socket.id);
-    } catch (error) {
-      console.error('Error updating offline status:', error);
-    }
-  });
-});
-
-// API Routes
-app.get('/api/matches/:userId', async (req, res) => {
-  try {
-    const { data, error } = await supabase
-      .from('matches')
-      .select(`
-        *,
-        user1:user1_id(id, display_name, avatar_url),
-        user2:user2_id(id, display_name, avatar_url)
-      `)
-      .or(`user1_id.eq.${req.params.userId},user2_id.eq.${req.params.userId}`)
-      .eq('status', 'accepted');
-
-    if (error) throw error;
-    res.json(data);
-  } catch (error) {
-    res.status(500).json({ error: error.message });
+  } else {
+    console.log('Not enough users in queue for matching');
   }
-});
+};
 
-app.get('/api/messages/:matchId', async (req, res) => {
-  try {
-    const { data, error } = await supabase
-      .from('messages')
-      .select('*')
-      .eq('match_id', req.params.matchId)
-      .order('sent_at', { ascending: true });
-
-    if (error) throw error;
-    res.json(data);
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-const PORT = process.env.PORT || 3000;
-httpServer.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
+const PORT = process.env.PORT || 3002;
+server.listen(PORT, () => {
+  console.log(`Server is running on port ${PORT}`);
 });
