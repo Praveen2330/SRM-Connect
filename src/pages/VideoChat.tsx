@@ -25,7 +25,10 @@ interface ExtendedChatMessage {
   from?: string;
 }
 
-const SOCKET_URL = 'http://localhost:3002';
+// Use environment variable for production or fallback to localhost for development
+// Force HTTPS protocol for WebSocket connections in production
+const SOCKET_URL = import.meta.env.VITE_SOCKET_SERVER_URL || 'http://localhost:3002';
+console.log('Using Socket.IO server URL:', SOCKET_URL);
 
 // Socket.IO connection options
 const SOCKET_OPTIONS = {
@@ -200,8 +203,15 @@ const VideoChat = (): JSX.Element => {
       return;
     }
 
-    // Configure socket with reconnection options
-    const newSocket = io(SOCKET_URL, {
+    // Initialize socket for authenticated users
+    console.log('Initializing socket connection to:', SOCKET_URL);
+    console.log('Environment variables available:', import.meta.env.VITE_SOCKET_SERVER_URL ? 'Yes' : 'No');
+    
+    // Ensure we're using secure WebSockets (wss://) if the server URL is https://
+    const socketUrl = SOCKET_URL.replace('https://', 'wss://').replace('http://', 'ws://');
+    console.log('Adjusted socket URL for WebSocket protocol:', socketUrl);
+    
+    const newSocket = io(socketUrl, {
       ...SOCKET_OPTIONS,
       query: { userId: user.id }
     });
