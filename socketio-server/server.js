@@ -29,13 +29,10 @@ const PORT = process.env.PORT || 3002;
 // Configure Socket.IO with CORS settings
 const io = new Server(server, {
   cors: {
-    // Allow connections from both the Vercel deployment and local development
-    origin: [
-      "https://srm-connect-nine.vercel.app",
-      "http://localhost:3000",
-      "http://localhost:5173", // Vite's default port
-    ],
-    methods: ["GET", "POST", "OPTIONS"],
+    origin: process.env.NODE_ENV === 'production' 
+      ? ["https://srm-connect-nine.vercel.app", "http://localhost:3000"]
+      : "http://localhost:3000",
+    methods: ["GET", "POST"],
     credentials: true,
     allowedHeaders: ["*"],
   },
