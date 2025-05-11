@@ -1,7 +1,7 @@
 import React, { useEffect, useState, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
-import { io, Socket } from 'socket.io-client';
+import socketIO from 'socket.io-client';
 import { Send, RefreshCw, Users, X } from 'lucide-react';
 import ProfilePicture from '../components/ProfilePicture';
 import { toast } from 'react-hot-toast';
@@ -42,7 +42,7 @@ export default function Messages() {
   const [error, setError] = useState<string | null>(null);
   const [isSearching, setIsSearching] = useState(false);
   const [connectionStatus, setConnectionStatus] = useState<string>('');
-  const socketRef = useRef<Socket>();
+  const socketRef = useRef<any>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const [isRecording, setIsRecording] = useState(false);
   const [recordingTime, setRecordingTime] = useState(0);
@@ -106,7 +106,7 @@ export default function Messages() {
         }
 
         // Initialize new socket connection
-        const backendUrl = import.meta.env.VITE_BACKEND_URL || 'http://localhost:3000';
+        const backendUrl = (import.meta as any).env?.VITE_BACKEND_URL || 'http://localhost:3000';
         console.log('Initializing new socket connection to:', backendUrl);
         console.log('Auth token available:', !!session.access_token);
         
@@ -120,10 +120,11 @@ export default function Messages() {
         }
         
         // Socket.IO connection setup
-        socketRef.current = io(backendUrl, {
+        socketRef.current = socketIO(backendUrl, {
           auth: {
             token: session.access_token
           },
+          // Standard Socket.IO options
           transports: ['websocket', 'polling'],
           reconnection: true,
           reconnectionAttempts: 10,
@@ -131,8 +132,7 @@ export default function Messages() {
           reconnectionDelayMax: 5000,
           timeout: 20000,
           forceNew: true,
-          path: '/socket.io/',
-          withCredentials: true
+          path: '/socket.io/'
         });
 
         // Add socket connection status handlers
@@ -142,13 +142,13 @@ export default function Messages() {
           toast.success('Connected to chat server');
         });
 
-        socketRef.current.on('connect_error', (error) => {
+        socketRef.current.on('connect_error', (error: Error) => {
           console.error('Socket connection error:', error);
           setConnectionStatus(`Connection error: ${error.message}`);
           toast.error('Failed to connect to chat server');
         });
 
-        socketRef.current.on('disconnect', (reason) => {
+        socketRef.current.on('disconnect', (reason: string) => {
           console.log('Socket disconnected:', reason);
           setConnectionStatus(`Disconnected: ${reason}`);
           toast.error('Disconnected from chat server');

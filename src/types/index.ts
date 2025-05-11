@@ -50,6 +50,38 @@ export interface AdminUser {
   profile?: UserProfile;
 }
 
+export interface UserReport {
+  id: string;
+  reporter_id: string;
+  reported_user_id: string;
+  chat_session_id?: string;
+  reported_at: string;
+  reason: string;
+  description?: string | null;
+  transcript?: any[];
+  status: 'pending' | 'in_review' | 'resolved' | 'dismissed';
+  reviewed_by?: string | null;
+  reviewed_at?: string | null;
+  admin_notes?: string | null;
+  action_taken?: string | null;
+  reporter?: UserProfile;
+  reported_user?: UserProfile;
+}
+
+export interface ChatReport {
+  id: string;
+  reporterId: string;
+  reportedUserId: string;
+  reason: string;
+  description?: string | null;
+  timestamp: string;
+  chatTranscript?: any[];
+  status: 'pending' | 'reviewed' | 'ignored' | 'warning_issued' | 'user_banned';
+  admin_notes?: string | null;
+  reviewer_id?: string | null;
+  reviewed_at?: string | null;
+}
+
 export interface ExtendedUserProfile extends UserProfile {
   email: string;
   created_at: string;

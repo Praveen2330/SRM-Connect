@@ -1,7 +1,9 @@
 import React, { useEffect, useState } from 'react';
+import { useAuth } from '../hooks/useAuth';
 import { useNavigate } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
 import { Camera, Loader2, ArrowLeft } from 'lucide-react';
+import toast from 'react-hot-toast';
 import ProfilePicture from '../components/ProfilePicture';
 
 interface Profile {
@@ -24,6 +26,7 @@ interface Profile {
 
 export default function Profile() {
   const navigate = useNavigate();
+  const { user } = useAuth();
   const [loading, setLoading] = useState(true);
   const [uploading, setUploading] = useState(false);
   const [profile, setProfile] = useState<Profile | null>(null);
@@ -31,8 +34,10 @@ export default function Profile() {
 
   // Load profile data
   useEffect(() => {
-    loadProfile();
-  }, []);
+    if (user) {
+      loadProfile();
+    }
+  }, [user]);
 
   const loadProfile = async () => {
     try {
@@ -188,32 +193,50 @@ export default function Profile() {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (loading) return;
     
     try {
       const { data: { user } } = await supabase.auth.getUser();
-      if (!user || !profile) return;
+      if (!user || !profile) {
+        setLoading(false);
+        return;
+      }
 
       setLoading(true);
       
-      // Clean up interests array - split by comma, trim whitespace, filter empty strings
+      // Check if profile is complete
+      const isProfileComplete = !!profile.display_name && 
+        !!profile.bio && 
+        profile.interests && 
+        profile.interests.length > 0 && 
+        !!profile.age && 
+        !!profile.gender && 
+        !!profile.gender_preference;
+
+      // Clean up interests array - split by commas and trim whitespace, filter empty strings
       const cleanedInterests = profile.interests 
         ? (typeof profile.interests === 'string' 
             ? (profile.interests as string).split(',').map((i: string) => i.trim()).filter(Boolean)
             : profile.interests.filter(Boolean))
         : [];
       
-      const profileData = {
+      // Only include fields that are guaranteed to exist in the database
+      const profileData: Record<string, any> = {
         id: user.id,
         display_name: profile.display_name || '',
         bio: profile.bio || '',
         interests: cleanedInterests,
-        language: profile.language || 'en',
-        age: profile.age || 25,
-        gender: profile.gender || 'any',
-        gender_preference: profile.gender_preference || 'any',
+        is_profile_complete: isProfileComplete,
         updated_at: new Date().toISOString()
       };
       
+      // Conditionally add fields that might not exist in the schema yet
+      // These will be ignored by Supabase if the columns don't exist
+      if (profile.language !== undefined) profileData.language = profile.language || 'en';
+      if (profile.age !== undefined) profileData.age = profile.age || 25;
+      if (profile.gender !== undefined) profileData.gender = profile.gender || 'any';
+      if (profile.gender_preference !== undefined) profileData.gender_preference = profile.gender_preference || 'any';
+
       const { error } = await supabase
         .from('profiles')
         .update(profileData)
@@ -222,13 +245,34 @@ export default function Profile() {
       if (error) throw error;
 
       // Update local state with cleaned interests
-      setProfile(prev => prev ? { ...prev, interests: cleanedInterests } : null);
-
-      setError('Profile updated successfully!');
-      setTimeout(() => setError(null), 3000);
+      setProfile(prev => prev ? { ...prev, interests: cleanedInterests, is_profile_complete: isProfileComplete } : null);
+      
+      // Update states and show success message
+      setLoading(false);
+      setError(null);
+      toast.success('Profile updated successfully!');
+      
+      // Navigate to dashboard
+      navigate('/dashboard', { replace: true });
     } catch (error) {
       console.error('Error updating profile:', error);
-      setError('Failed to update profile: ' + (error instanceof Error ? error.message : String(error)));
+      let errorMessage = 'Failed to update profile';
+      
+      if (error instanceof Error) {
+        errorMessage += ': ' + error.message;
+      } else if (typeof error === 'object' && error !== null) {
+        // Handle Supabase error object which may have message or details properties
+        const supabaseError = error as any;
+        if (supabaseError.message) {
+          errorMessage += ': ' + supabaseError.message;
+        } else if (supabaseError.details) {
+          errorMessage += ': ' + supabaseError.details;
+        } else if (supabaseError.error_description) {
+          errorMessage += ': ' + supabaseError.error_description;
+        }
+      }
+      
+      setError(errorMessage);
     } finally {
       setLoading(false);
     }

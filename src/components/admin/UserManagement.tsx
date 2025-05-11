@@ -65,43 +65,146 @@ const UserManagement: React.FC<UserManagementProps> = ({ canManage }) => {
     setError(null);
     
     try {
-      // Get total count first (no pagination)
-      const { count, error: countError } = await supabase
-        .from('profiles')
-        .select('*', { count: 'exact', head: true });
-      
-      if (countError) throw countError;
-      setTotalUsers(count || 0);
-      
-      // Then get paginated data
-      const { data, error } = await supabase
-        .from('profiles')
-        .select(`
-          *,
-          users:id(email, created_at, last_sign_in_at, user_metadata)
-        `)
-        .order(sortBy, { ascending: sortDirection === 'asc' })
-        .range((page - 1) * usersPerPage, page * usersPerPage - 1);
-      
-      if (error) throw error;
-      
-      if (data) {
-        // Transform data to match ExtendedUserProfile
-        const transformedUsers = data.map(profile => ({
-          id: profile.id,
-          name: profile.display_name || profile.name || 'Anonymous',
-          email: profile.users?.email || '',
-          created_at: profile.users?.created_at || profile.created_at,
-          last_sign_in_at: profile.users?.last_sign_in_at,
-          gender: profile.gender || 'unknown',
-          status: profile.status || 'active',
-          user_metadata: profile.users?.user_metadata,
-          avatar_url: profile.avatar_url
-        }));
+      // First approach: Try the join query
+      try {
+        // Get total count first (no pagination)
+        const { count, error: countError } = await supabase
+          .from('profiles')
+          .select('*', { count: 'exact', head: true });
         
-        setUsers(transformedUsers);
-        setFilteredUsers(transformedUsers);
+        if (countError) throw countError;
+        setTotalUsers(count || 0);
+        
+        // Then get paginated data with join
+        const { data, error } = await supabase
+          .from('profiles')
+          .select(`
+            *,
+            users:id(email, created_at, last_sign_in_at, user_metadata)
+          `)
+          .order(sortBy, { ascending: sortDirection === 'asc' })
+          .range((page - 1) * usersPerPage, page * usersPerPage - 1);
+        
+        if (error) throw error;
+        
+        if (data) {
+          // Transform data to match ExtendedUserProfile
+          const transformedUsers = data.map(profile => ({
+            id: profile.id,
+            name: profile.display_name || profile.name || 'Anonymous',
+            email: profile.users?.email || '',
+            created_at: profile.users?.created_at || profile.created_at,
+            last_sign_in_at: profile.users?.last_sign_in_at,
+            gender: profile.gender || 'unknown',
+            status: profile.status || 'active',
+            user_metadata: profile.users?.user_metadata,
+            avatar_url: profile.avatar_url
+          }));
+          
+          setUsers(transformedUsers);
+          setFilteredUsers(transformedUsers);
+          return; // Exit if successful
+        }
+      } catch (joinError) {
+        console.error('Error with join query:', joinError);
+        
+        // Second approach: Try separate queries if join fails
+        try {
+          // Get user profiles
+          const { data: profilesData, error: profilesError } = await supabase
+            .from('profiles')
+            .select('*')
+            .order(sortBy, { ascending: sortDirection === 'asc' })
+            .range((page - 1) * usersPerPage, page * usersPerPage - 1);
+          
+          if (profilesError) throw profilesError;
+          
+          if (profilesData && profilesData.length > 0) {
+            // Get user IDs from profiles to fetch auth data
+            const userIds = profilesData.map(profile => profile.id);
+            
+            // Try to get auth users data
+            const { data: authData, error: authError } = await supabase
+              .from('auth.users')
+              .select('id, email, created_at, last_sign_in_at, user_metadata')
+              .in('id', userIds);
+            
+            // Create a map for quick lookup
+            const authMap = new Map();
+            if (!authError && authData) {
+              authData.forEach(user => {
+                authMap.set(user.id, user);
+              });
+            }
+            
+            // Combine data
+            const transformedUsers = profilesData.map(profile => {
+              const authUser = authMap.get(profile.id);
+              return {
+                id: profile.id,
+                name: profile.display_name || profile.name || 'Anonymous',
+                email: authUser?.email || '',
+                created_at: authUser?.created_at || profile.created_at,
+                last_sign_in_at: authUser?.last_sign_in_at,
+                gender: profile.gender || 'unknown',
+                status: profile.status || 'active',
+                user_metadata: authUser?.user_metadata,
+                avatar_url: profile.avatar_url
+              };
+            });
+            
+            setUsers(transformedUsers);
+            setFilteredUsers(transformedUsers);
+            return; // Exit if successful
+          }
+        } catch (separateQueryError) {
+          console.error('Error with separate queries:', separateQueryError);
+          // Fall through to fallback data
+        }
       }
+      
+      // Fallback: If all database approaches fail, use mock data
+      console.log('Using fallback user data due to database errors');
+      const fallbackUsers: ExtendedUserProfile[] = [
+        {
+          id: 'e1f9caeb-ae74-41af-984a-b44230ac7491',
+          name: 'Admin User',
+          email: 'pn7054@srmist.edu.in',
+          created_at: '2025-03-29T12:31:19.255746Z',
+          last_sign_in_at: new Date().toISOString(),
+          gender: 'male',
+          status: 'active',
+          user_metadata: { name: 'Admin' },
+          avatar_url: null
+        },
+        {
+          id: '00000000-0000-0000-0000-000000000001',
+          name: 'Test User 1',
+          email: 'test1@srmist.edu.in',
+          created_at: '2025-04-01T10:00:00Z',
+          last_sign_in_at: '2025-05-09T14:30:00Z',
+          gender: 'female',
+          status: 'active',
+          user_metadata: { name: 'Test User 1' },
+          avatar_url: null
+        },
+        {
+          id: '00000000-0000-0000-0000-000000000002',
+          name: 'Test User 2',
+          email: 'test2@srmist.edu.in',
+          created_at: '2025-04-02T11:00:00Z',
+          last_sign_in_at: '2025-05-08T09:15:00Z',
+          gender: 'male',
+          status: 'active',
+          user_metadata: { name: 'Test User 2' },
+          avatar_url: null
+        }
+      ];
+      
+      setTotalUsers(fallbackUsers.length);
+      setUsers(fallbackUsers);
+      setFilteredUsers(fallbackUsers);
+      setError('Database relationship error. Using demo data.');
     } catch (error) {
       console.error('Error fetching users:', error);
       setError((error as Error).message);
@@ -193,24 +296,21 @@ const UserManagement: React.FC<UserManagementProps> = ({ canManage }) => {
   return (
     <div>
       <div className="flex justify-between items-center mb-6">
-        <h2 className="text-2xl font-bold">User Management</h2>
-        
-        <div className="flex items-center space-x-2">
+        <h2 className="text-2xl font-semibold">User Management</h2>
+        <div className="flex space-x-2">
           <button
-            onClick={fetchUsers}
-            className="p-2 bg-indigo-800 hover:bg-indigo-700 rounded"
-            title="Refresh users"
+            onClick={() => fetchUsers()}
+            className="p-2 rounded-lg bg-blue-900 hover:bg-blue-800 transition-colors"
           >
             <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
             </svg>
           </button>
-          
-          <button
-            onClick={exportUserData}
-            className="px-4 py-2 bg-green-800 hover:bg-green-700 rounded flex items-center"
+          <button 
+            onClick={exportUserData} 
+            className="flex items-center bg-green-900 text-white px-4 py-2 rounded hover:bg-green-800 transition-colors"
           >
-            <svg className="w-5 h-5 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <svg className="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
             </svg>
             Export Users
@@ -219,8 +319,15 @@ const UserManagement: React.FC<UserManagementProps> = ({ canManage }) => {
       </div>
       
       {error && (
-        <div className="bg-red-900 bg-opacity-20 border border-red-800 rounded-lg p-4 mb-6">
-          <p className="text-red-400">{error}</p>
+        <div className="bg-red-900 text-white p-4 mb-4 rounded">
+          <div className="flex items-center">
+            <div className="mr-3 text-xl">⚠️</div>
+            <div>
+              <p className="font-semibold">Database Schema Error</p>
+              <p className="text-sm">{error}</p>
+              <p className="text-sm mt-1">Using fallback data. Full functionality is limited until database issues are resolved.</p>
+            </div>
+          </div>
         </div>
       )}
       

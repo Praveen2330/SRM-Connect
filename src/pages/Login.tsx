@@ -46,47 +46,64 @@ function Login() {
           return;
         }
 
-        // Ensure profile exists
-        const { error: upsertError } = await supabase
+        // Check if profile exists and get its completion status
+        const { data: userProfile, error: profileError } = await supabase
           .from('profiles')
-          .upsert([
-            {
-              id: session.user.id,
-              display_name: session.user.user_metadata.full_name || session.user.email?.split('@')[0],
-              avatar_url: session.user.user_metadata.avatar_url,
-              is_online: false,
-              last_seen: new Date().toISOString()
-            }
-          ], { onConflict: 'id' })
-          .select()
-          .single();
-
-        if (upsertError) {
-          console.error('Error upserting profile:', upsertError);
-          throw upsertError;
-        }
-
-        // Check if profile is complete
-        const { data: userProfile } = await supabase
-          .from('profiles')
-          .select('bio, interests')
+          .select('*')
           .eq('id', session.user.id)
           .single();
 
-        if (!userProfile?.bio || !userProfile?.interests || userProfile.interests.length === 0) {
+        if (profileError && profileError.code === 'PGRST116') {
+          // Profile doesn't exist, create it
+          const { error: upsertError } = await supabase
+            .from('profiles')
+            .upsert([
+              {
+                id: session.user.id,
+                display_name: session.user.user_metadata.full_name || session.user.email?.split('@')[0],
+                avatar_url: session.user.user_metadata.avatar_url,
+                is_online: true,
+                last_seen: new Date().toISOString(),
+                is_profile_complete: false,
+                bio: '',
+                interests: [],
+                age: null,
+                gender: '',
+                gender_preference: '',
+                created_at: new Date().toISOString(),
+                updated_at: new Date().toISOString()
+              }
+            ])
+            .select()
+            .single();
+
+          if (upsertError) {
+            console.error('Error upserting profile:', upsertError);
+            throw upsertError;
+          }
+
+          // Redirect to profile page for completion
           toast.success('Please complete your profile.');
           navigate('/profile');
+        } else if (profileError) {
+          throw profileError;
         } else {
-          // Update online status
-          await supabase
-            .from('profiles')
-            .update({ 
-              is_online: true,
-              last_seen: new Date().toISOString()
-            })
-            .eq('id', session.user.id);
+          // Profile exists, check if it's complete
+          if (!userProfile.is_profile_complete) {
+            toast.success('Please complete your profile.');
+            navigate('/profile');
+          } else {
+            // Update online status
+            await supabase
+              .from('profiles')
+              .update({ 
+                is_online: true,
+                last_seen: new Date().toISOString()
+              })
+              .eq('id', session.user.id);
 
-          navigate('/dashboard');
+            navigate('/dashboard');
+          }
         }
       }
     } catch (err) {
@@ -116,46 +133,63 @@ function Login() {
       if (signInError) throw signInError;
 
       if (authData?.user) {
-        // Ensure profile exists
-        const { error: upsertError } = await supabase
+        // Check if profile exists and get its completion status
+        const { data: userProfile, error: profileError } = await supabase
           .from('profiles')
-          .upsert([
-            {
-              id: authData.user.id,
-              display_name: displayName || email.split('@')[0],
-              is_online: false,
-              last_seen: new Date().toISOString()
-            }
-          ], { onConflict: 'id' })
-          .select()
-          .single();
-
-        if (upsertError) {
-          console.error('Error upserting profile:', upsertError);
-          throw upsertError;
-        }
-
-        // Check if profile is complete
-        const { data: userProfile } = await supabase
-          .from('profiles')
-          .select('bio, interests')
+          .select('*')
           .eq('id', authData.user.id)
           .single();
 
-        if (!userProfile?.bio || !userProfile?.interests || userProfile.interests.length === 0) {
+        if (profileError && profileError.code === 'PGRST116') {
+          // Profile doesn't exist, create it
+          const { error: upsertError } = await supabase
+            .from('profiles')
+            .upsert([
+              {
+                id: authData.user.id,
+                display_name: displayName || email.split('@')[0],
+                is_online: true,
+                last_seen: new Date().toISOString(),
+                is_profile_complete: false,
+                bio: '',
+                interests: [],
+                age: null,
+                gender: '',
+                gender_preference: '',
+                created_at: new Date().toISOString(),
+                updated_at: new Date().toISOString()
+              }
+            ])
+            .select()
+            .single();
+
+          if (upsertError) {
+            console.error('Error upserting profile:', upsertError);
+            throw upsertError;
+          }
+
+          // Redirect to profile page for completion
           toast.success('Please complete your profile.');
           navigate('/profile');
+        } else if (profileError) {
+          throw profileError;
         } else {
-          // Update last seen and online status
-          await supabase
-            .from('profiles')
-            .update({ 
-              is_online: true,
-              last_seen: new Date().toISOString()
-            })
-            .eq('id', authData.user.id);
+          // Profile exists, check if it's complete
+          if (!userProfile.is_profile_complete) {
+            toast.success('Please complete your profile.');
+            navigate('/profile');
+          } else {
+            // Update online status
+            await supabase
+              .from('profiles')
+              .update({ 
+                is_online: true,
+                last_seen: new Date().toISOString()
+              })
+              .eq('id', authData.user.id);
 
-          navigate('/dashboard');
+            navigate('/dashboard');
+          }
         }
       }
     } catch (error) {

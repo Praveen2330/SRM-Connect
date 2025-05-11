@@ -19,6 +19,8 @@ function Dashboard() {
   const navigate = useNavigate();
   const [activities, setActivities] = useState<RecentActivity[]>([]);
   const [loading, setLoading] = useState(true);
+  const [isAdmin, setIsAdmin] = useState(false);
+  const [currentUserId, setCurrentUserId] = useState<string | null>(null);
 
   useEffect(() => {
     const fetchActivities = async () => {
@@ -27,6 +29,14 @@ function Dashboard() {
         if (!user) {
           console.error('No authenticated user found');
           return;
+        }
+        
+        // Store user ID for admin check
+        setCurrentUserId(user.id);
+        
+        // Check if this is the specific admin user
+        if (user.id === 'e1f9caeb-ae74-41af-984a-b44230ac7491') {
+          setIsAdmin(true);
         }
 
         // Get all activities for the user
@@ -101,10 +111,18 @@ function Dashboard() {
       <div className="max-w-6xl mx-auto">
         <div className="flex justify-between items-center mb-12">
           <h1 className="text-4xl font-bold">Dashboard</h1>
-          <Link to="/settings" className="flex items-center gap-2 bg-zinc-900 p-2 rounded-lg">
-            <Settings className="w-5 h-5" />
-            <span>Settings</span>
-          </Link>
+          <div className="flex items-center gap-4">
+            {isAdmin && (
+              <Link to="/admin" className="flex items-center gap-2 bg-indigo-900 p-2 rounded-lg hover:bg-indigo-800 transition-colors">
+                <span className="bg-red-600 text-xs px-2 py-0.5 rounded">ADMIN</span>
+                <span>Admin Panel</span>
+              </Link>
+            )}
+            <Link to="/settings" className="flex items-center gap-2 bg-zinc-900 p-2 rounded-lg">
+              <Settings className="w-5 h-5" />
+              <span>Settings</span>
+            </Link>
+          </div>
         </div>
 
         <div className="grid grid-cols-1 md:grid-cols-3 gap-8 mb-12">
@@ -128,7 +146,7 @@ function Dashboard() {
               <h2 className="text-xl font-bold mb-2">Instant Chat</h2>
               <p className="text-gray-400 text-center mb-4">Chat with other users instantly</p>
               <Link 
-                to="/messages" 
+                to="/instant-chat" 
                 className="w-full bg-zinc-900 border border-white py-2 rounded-lg font-semibold text-center hover:bg-zinc-800 transition-colors"
               >
                 Open Chat

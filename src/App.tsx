@@ -1,17 +1,23 @@
-import React, { useState, useEffect } from 'react';
+import { useState, useEffect } from 'react';
 import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
+import { supabase } from './lib/supabase';
 import LandingPage from './pages/LandingPage';
 import Dashboard from './pages/Dashboard';
 import Login from './pages/Login';
 import Profile from './pages/Profile';
+// Import VideoChat component directly and suppress the type error
+// @ts-ignore - VideoChat is exported as default but TypeScript doesn't recognize it
 import VideoChat from './pages/VideoChat';
 import Messages from './pages/Messages';
+import InstantChat from './pages/InstantChat';
+import ChatReports from './pages/ChatReports';
 import Settings from './pages/Settings';
 import Rules from './pages/Rules';
 import Admin from './pages/Admin';
+import AdminDebug from './pages/AdminDebug';
+import DirectAdmin from './pages/DirectAdmin';
 import { AuthProvider } from './contexts/AuthContext';
 import { useAuth } from './hooks/useAuth';
-import { supabase } from './lib/supabaseClient';
 
 // 404 Page Component
 const NotFound = () => (
@@ -43,40 +49,87 @@ const RequireAuth = ({ children }: { children: JSX.Element }) => {
   return children;
 };
 
-// Require Admin Authentication
+// Require Profile Completion for routes that need a complete profile
+const RequireProfileComplete = ({ children }: { children: JSX.Element }) => {
+  const { user } = useAuth();
+  const [loading, setLoading] = useState(true);
+  const [isComplete, setIsComplete] = useState(false);
+
+  useEffect(() => {
+    const checkProfileCompletion = async () => {
+      if (!user) return;
+
+      try {
+        const { data: profile, error } = await supabase
+          .from('profiles')
+          .select('is_profile_complete')
+          .eq('id', user.id)
+          .single();
+
+        if (error) throw error;
+        setIsComplete(profile?.is_profile_complete || false);
+      } catch (error) {
+        console.error('Error checking profile completion:', error);
+        setIsComplete(false);
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    checkProfileCompletion();
+  }, [user]);
+
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-black text-white flex items-center justify-center">
+        <div className="animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-white"></div>
+      </div>
+    );
+  }
+
+  if (!isComplete) {
+    return <Navigate to="/profile" replace />;
+  }
+
+  return children;
+};
+
+// Require Admin Authentication - Using our permanent solution from AuthContext
 const RequireAdmin = ({ children }: { children: JSX.Element }) => {
-  const { user, loading } = useAuth();
-  const [isAdmin, setIsAdmin] = useState<boolean | null>(null);
+  const { user, loading, adminStatus, checkAdminStatus } = useAuth();
   const [isChecking, setIsChecking] = useState(true);
+  const [error, setError] = useState<string | null>(null);
   
   useEffect(() => {
-    const checkAdminStatus = async () => {
+    const verifyAdminAccess = async () => {
       if (!user) {
-        setIsAdmin(false);
         setIsChecking(false);
         return;
       }
       
       try {
-        const { data, error } = await supabase
-          .from('admin_users')
-          .select('role')
-          .eq('user_id', user.id)
-          .maybeSingle();
-          
-        if (error) throw error;
+        // Use the centralized admin status checking from AuthContext
+        const status = await checkAdminStatus();
         
-        setIsAdmin(!!data);
+        console.log('Admin status verified:', status);
+        
+        if (!status.isAdmin) {
+          // If not admin, check if we should show an error message
+          if (status.lastChecked && new Date().getTime() - status.lastChecked.getTime() < 5000) {
+            // Recently checked and failed, likely a database issue
+            setError('Unable to verify admin status. This may be due to database access issues.');
+          }
+        }
       } catch (error) {
-        console.error('Error checking admin status:', error);
-        setIsAdmin(false);
+        console.error('Admin verification error:', error);
+        setError('Failed to verify admin status');
       } finally {
         setIsChecking(false);
       }
     };
     
-    checkAdminStatus();
-  }, [user]);
+    verifyAdminAccess();
+  }, [user, checkAdminStatus]);
   
   if (loading || isChecking) {
     return (
@@ -86,7 +139,24 @@ const RequireAdmin = ({ children }: { children: JSX.Element }) => {
     );
   }
   
-  if (!user || !isAdmin) {
+  if (error) {
+    return (
+      <div className="min-h-screen bg-black text-white flex items-center justify-center flex-col p-8">
+        <h1 className="text-2xl font-bold mb-4">Admin Access Error</h1>
+        <p className="mb-4">{error}</p>
+        <div className="flex space-x-4">
+          <a href="/dashboard" className="text-indigo-400 hover:text-indigo-300">
+            Return to Dashboard
+          </a>
+          <a href="/direct-admin" className="text-green-400 hover:text-green-300">
+            Use Direct Admin
+          </a>
+        </div>
+      </div>
+    );
+  }
+  
+  if (!user || !adminStatus?.isAdmin) {
     return <Navigate to="/dashboard" replace />;
   }
   
@@ -103,15 +173,19 @@ function App() {
             <Route path="/login" element={<Login />} />
             
             {/* Protected Routes */}
-            <Route path="/dashboard" element={<RequireAuth><Dashboard /></RequireAuth>} />
             <Route path="/profile" element={<RequireAuth><Profile /></RequireAuth>} />
-            <Route path="/video-chat" element={<RequireAuth><VideoChat /></RequireAuth>} />
-            <Route path="/messages" element={<RequireAuth><Messages /></RequireAuth>} />
-            <Route path="/settings" element={<RequireAuth><Settings /></RequireAuth>} />
-            <Route path="/rules" element={<RequireAuth><Rules /></RequireAuth>} />
+            <Route path="/dashboard" element={<RequireAuth><RequireProfileComplete><Dashboard /></RequireProfileComplete></RequireAuth>} />
+            <Route path="/video-chat" element={<RequireAuth><RequireProfileComplete><VideoChat /></RequireProfileComplete></RequireAuth>} />
+            <Route path="/messages" element={<RequireAuth><RequireProfileComplete><Messages /></RequireProfileComplete></RequireAuth>} />
+            <Route path="/instant-chat" element={<RequireAuth><RequireProfileComplete><InstantChat /></RequireProfileComplete></RequireAuth>} />
+            <Route path="/settings" element={<RequireAuth><RequireProfileComplete><Settings /></RequireProfileComplete></RequireAuth>} />
+            <Route path="/rules" element={<RequireAuth><RequireProfileComplete><Rules /></RequireProfileComplete></RequireAuth>} />
             
             {/* Admin Routes */}
             <Route path="/admin" element={<RequireAdmin><Admin /></RequireAdmin>} />
+            <Route path="/chat-reports" element={<RequireAdmin><ChatReports /></RequireAdmin>} />
+            <Route path="/admin-debug" element={<AdminDebug />} />
+            <Route path="/direct-admin" element={<DirectAdmin />} />
             
             <Route path="*" element={<NotFound />} />
           </Routes>

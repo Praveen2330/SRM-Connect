@@ -50,32 +50,19 @@ export default function VideoCall({ sessionId, userId, onEndCall }: VideoCallPro
       stream: stream,
       trickle: false
     });
-
     peer.on('signal', async data => {
       // Send the signal data to the other peer through Supabase
-      // In initializePeerConnection, modify peer.on('signal', ...)
-      peer.on('signal', async data => {
-        // Send the signal data to the other peer through Supabase
-        // Include sender ID to differentiate signals
-        await supabase
-          .from('video_sessions')
-          .update({
-            signal_data: {
-              senderId: userId, // Assuming userId is available in scope
-              signal: data
-            }
-          })
-          .eq('id', sessionId);
-      });
-
-      // In the subscription callback, modify the signal processing
-      if (session.signal_data && peer) {
-        // Check if the signal is from the other peer before applying
-        // Assuming session.signal_data is an object with senderId and signal properties
-        if (session.signal_data.senderId && session.signal_data.senderId !== userId) {
-          peer.signal(session.signal_data.signal);
-        }
-      }
+      // Include sender ID to differentiate signals
+      await supabase
+        .from('video_sessions')
+        .update({
+          signal_data: {
+            senderId: userId, // Assuming userId is available in scope
+            signal: data
+          }
+        })
+        .eq('id', sessionId);
+    });
 
       peer.on('stream', stream => {
         setRemoteStream(stream);
@@ -97,7 +84,7 @@ export default function VideoCall({ sessionId, userId, onEndCall }: VideoCallPro
         }, async (payload) => {
           const session = payload.new as VideoSession;
           if (session.signal_data && peer) {
-            peer.signal(session.signal_data);
+            peer.signal(session.signal_data.signal);
           }
         })
         .subscribe();
@@ -129,7 +116,7 @@ export default function VideoCall({ sessionId, userId, onEndCall }: VideoCallPro
       localStream?.getTracks().forEach(track => track.stop());
       peerRef.current?.destroy();
       await supabase
-        .from('video_sessions')
+        .from('video_sessionIds')
         .update({ status: 'ended', ended_at: new Date().toISOString() })
         .eq('id', sessionId);
       onEndCall();

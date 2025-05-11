@@ -1,4 +1,4 @@
-import React from 'react';
+// Using modern JSX transform - no React import needed
 import { User } from 'lucide-react';
 
 interface ProfilePictureProps {

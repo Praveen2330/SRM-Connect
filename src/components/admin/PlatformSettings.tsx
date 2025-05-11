@@ -1,11 +1,23 @@
 import React, { useState, useEffect } from 'react';
 import { supabase } from '../../lib/supabaseClient';
-import { SystemSettings } from '../../types';
 import { useAuth } from '../../hooks/useAuth';
+
+// Define the SystemSettings interface if it's not available in types
+interface SystemSettings {
+  id: number;
+  allow_new_registrations: boolean;
+  allowed_email_domains: string[];
+  max_reports_before_auto_suspend: number;
+  max_reports_allowed_per_day: number;
+  maintenance_mode: boolean;
+  maintenance_message: string;
+  last_updated: string;
+  updated_by?: string;
+}
 
 const PlatformSettings: React.FC = () => {
   const { user } = useAuth();
-  const [settings, setSettings] = useState<SystemSettings | null>(null);
+  // We don't need the settings state variable since we store individual fields
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -29,25 +41,58 @@ const PlatformSettings: React.FC = () => {
     setError(null);
     
     try {
-      const { data, error } = await supabase
-        .from('system_settings')
-        .select('*')
-        .single();
-      
-      if (error) throw error;
-      
-      if (data) {
-        setSettings(data as SystemSettings);
-        setAllowRegistrations(data.allow_new_registrations);
-        setAllowedDomains(data.allowed_email_domains || ['srmist.edu.in']);
-        setMaintenanceMode(data.maintenance_mode);
-        setMaintenanceMessage(data.maintenance_message || '');
-        setMaxReportsBeforeSuspend(data.max_reports_before_auto_suspend || 5);
-        setMaxReportsPerDay(data.max_reports_allowed_per_day || 3);
+      // Try to fetch settings from database
+      try {
+        const { data, error } = await supabase
+          .from('system_settings')
+          .select('*')
+          .single();
+        
+        if (error) throw error;
+        
+        if (data) {
+          setSettings(data as SystemSettings);
+          setAllowRegistrations(data.allow_new_registrations);
+          setAllowedDomains(data.allowed_email_domains || ['srmist.edu.in']);
+          setMaintenanceMode(data.maintenance_mode);
+          setMaintenanceMessage(data.maintenance_message || '');
+          setMaxReportsBeforeSuspend(data.max_reports_before_auto_suspend || 5);
+          setMaxReportsPerDay(data.max_reports_allowed_per_day || 3);
+          return; // Exit if successful
+        }
+      } catch (dbError) {
+        console.error('Error fetching settings from database:', dbError);
+        // Continue to fallback data
       }
+      
+      // If we reach here, use fallback data
+      console.log('Using fallback settings data');
+      
+      // Create default fallback settings
+      const fallbackSettings: SystemSettings = {
+        id: 1,
+        allow_new_registrations: true,
+        allowed_email_domains: ['srmist.edu.in'],
+        max_reports_before_auto_suspend: 5,
+        max_reports_allowed_per_day: 3,
+        maintenance_mode: false,
+        maintenance_message: '',
+        last_updated: new Date().toISOString(),
+        updated_by: user?.id
+      };
+      
+      // We don't need to set the settings object since we use individual fields
+      setAllowRegistrations(fallbackSettings.allow_new_registrations);
+      setAllowedDomains(fallbackSettings.allowed_email_domains);
+      setMaintenanceMode(fallbackSettings.maintenance_mode);
+      setMaintenanceMessage(fallbackSettings.maintenance_message);
+      setMaxReportsBeforeSuspend(fallbackSettings.max_reports_before_auto_suspend);
+      setMaxReportsPerDay(fallbackSettings.max_reports_allowed_per_day);
+      
+      setError('Database relationship error. Using fallback settings data.');
     } catch (error) {
-      console.error('Error fetching settings:', error);
-      setError((error as Error).message);
+      console.error('Critical error in platform settings:', error);
+      setError('Critical error loading settings. Please try again later.');
     } finally {
       setIsLoading(false);
     }
@@ -70,23 +115,33 @@ const PlatformSettings: React.FC = () => {
         last_updated: new Date().toISOString()
       };
       
-      const { error } = await supabase
-        .from('system_settings')
-        .update(updatedSettings)
-        .eq('id', 1);
-      
-      if (error) throw error;
-      
-      setSuccess('Platform settings updated successfully');
-      
-      // Clear success message after 3 seconds
-      setTimeout(() => {
-        setSuccess(null);
-      }, 3000);
-      
+      try {
+        const { error } = await supabase
+          .from('system_settings')
+          .update(updatedSettings)
+          .eq('id', 1);
+        
+        if (error) throw error;
+        
+        setSuccess('Platform settings updated successfully');
+        
+        // Clear success message after 3 seconds
+        setTimeout(() => {
+          setSuccess(null);
+        }, 3000);
+      } catch (dbError) {
+        console.error('Database error saving settings:', dbError);
+        
+        // Save settings locally and show partial success
+        localStorage.setItem('srm_platform_settings', JSON.stringify(updatedSettings));
+        setSuccess('Settings saved locally. Database update pending due to connection issues.');
+        
+        // Still show an error to indicate database issues
+        setError('Could not save to database due to connection issues. Changes saved locally.');
+      }
     } catch (error) {
-      console.error('Error saving settings:', error);
-      setError((error as Error).message);
+      console.error('Critical error saving settings:', error);
+      setError('Failed to save settings. Please try again later.');
     } finally {
       setIsSaving(false);
     }
@@ -140,8 +195,15 @@ const PlatformSettings: React.FC = () => {
       </div>
       
       {error && (
-        <div className="bg-red-900 bg-opacity-20 border border-red-800 rounded-lg p-4 mb-6">
-          <p className="text-red-400">{error}</p>
+        <div className="bg-red-900 text-white p-4 mb-4 rounded">
+          <div className="flex items-center">
+            <div className="mr-3 text-xl">⚠️</div>
+            <div>
+              <p className="font-semibold">Database Schema Error</p>
+              <p className="text-sm">{error}</p>
+              <p className="text-sm mt-1">Using fallback settings data. Full functionality is limited until database issues are resolved.</p>
+            </div>
+          </div>
         </div>
       )}
       

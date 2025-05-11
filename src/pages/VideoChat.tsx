@@ -8,6 +8,7 @@ import { supabase } from '../lib/supabaseClient';
 interface UserProfile {
   id: string;
   name: string;
+  email?: string; // Added email property
   avatar_url?: string;
   display_name?: string;
 }
@@ -128,21 +129,39 @@ const VideoChat = (): JSX.Element => {
     
     setIsReportSubmitting(true);
     try {
+      // Get the current timestamp
+      const reportTimestamp = new Date().toISOString();
+      
+      // Create a report object with more detailed information
+      const reportData = {
+        reporter_id: user.id,
+        reported_user_id: partnerProfile.id,
+        reason: reportReason,
+        reported_at: reportTimestamp,
+        status: 'pending',
+        report_type: 'video_chat',
+        reporter_email: user.email,
+        reporter_display_name: user.user_metadata?.display_name || 'Anonymous',
+        reported_user_email: partnerProfile.email || 'Unknown',
+        reported_user_display_name: partnerProfile.display_name || partnerProfile.name || 'Unknown',
+        // Include metadata about the report context
+        context: {
+          session_start_time: new Date(isCalling ? Date.now() - 600000 : Date.now()).toISOString(), // Approximate session start time
+          report_location: 'video_chat',
+          client_timestamp: reportTimestamp
+        }
+      };
+      
       // Submit the report to Supabase
       const { error } = await supabase
         .from('user_reports')
-        .insert([
-          {
-            reporter_id: user.id,
-            reported_user_id: partnerProfile.id,
-            reason: reportReason,
-            reported_at: new Date().toISOString(),
-            status: 'pending'
-          }
-        ]);
+        .insert([reportData]);
       
       if (error) throw error;
       
+      console.log('Report submitted successfully:', reportData);
+      
+      // Show success message and reset form
       setReportSuccess(true);
       setTimeout(() => {
         setIsReporting(false);
@@ -257,20 +276,40 @@ const VideoChat = (): JSX.Element => {
     newSocket.on('reconnect_error', handleReconnectError);
     newSocket.on('connect_error', handleConnectError);
 
-    // Initialize camera
+    // Initialize camera and microphone
     const initCamera = async () => {
       try {
-        console.log('Requesting camera access...');
-        const stream = await navigator.mediaDevices.getUserMedia({ 
+        console.log('Requesting camera and microphone access...');
+        
+        // First, check if we have permissions
+        const permissions = await Promise.all([
+          navigator.permissions.query({ name: 'camera' as PermissionName }),
+          navigator.permissions.query({ name: 'microphone' as PermissionName })
+        ]);
+        
+        const [cameraPermission, micPermission] = permissions;
+        
+        if (cameraPermission.state === 'denied' || micPermission.state === 'denied') {
+          throw new Error('Camera or microphone permission denied. Please enable them in your browser settings.');
+        }
+        
+        // Request both camera and microphone access together
+        const stream = await navigator.mediaDevices.getUserMedia({
           video: {
             width: { ideal: 1280 },
             height: { ideal: 720 },
-            frameRate: { ideal: 30 }
-          }, 
-          audio: true 
+            frameRate: { ideal: 30 },
+            facingMode: 'user'
+          },
+          audio: {
+            echoCancellation: true,
+            noiseSuppression: true,
+            autoGainControl: true
+          }
         });
         
-        console.log('Camera access granted, setting up local video');
+        console.log('Camera and microphone access granted');
+        
         // Set the stream to state and refs
         setLocalStream(stream);
         localStreamRef.current = stream;
@@ -278,13 +317,26 @@ const VideoChat = (): JSX.Element => {
         // Ensure video plays immediately
         if (localVideoRef.current) {
           localVideoRef.current.srcObject = stream;
+          localVideoRef.current.muted = true; // Mute local video to prevent echo
           localVideoRef.current.play()
             .then(() => console.log('Local video playing'))
             .catch(e => console.error('Error playing local video:', e));
         }
+        
+        // Add event listeners for track ended events
+        stream.getTracks().forEach(track => {
+          track.onended = () => {
+            console.log(`${track.kind} track ended`);
+            setError(`${track.kind} access was lost. Please check your device settings.`);
+          };
+        });
       } catch (err) {
-        console.error('Error accessing camera:', err);
-        setError('Could not access camera or microphone');
+        console.error('Error accessing media devices:', err);
+        setError(
+          err instanceof Error
+            ? err.message
+            : 'Could not access camera or microphone. Please ensure you have granted the necessary permissions.'
+        );
       }
     };
 
@@ -667,7 +719,7 @@ const VideoChat = (): JSX.Element => {
     if (chatContainer) {
       setTimeout(() => {
         chatContainer.scrollTop = chatContainer.scrollHeight;
-      }, 100);
+      }, 100); // Add a small delay to ensure content is rendered
     }
   }, [socket, currentMessage, user]);
 

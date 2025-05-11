@@ -1,8 +1,8 @@
 import { createClient } from '@supabase/supabase-js';
 import { Database } from './database.types';
 
-const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
-const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
+const supabaseUrl = (import.meta as any).env?.VITE_SUPABASE_URL;
+const supabaseAnonKey = (import.meta as any).env?.VITE_SUPABASE_ANON_KEY;
 
 if (!supabaseUrl || !supabaseAnonKey) {
   throw new Error('Missing Supabase environment variables');
@@ -57,6 +57,8 @@ export type Profile = {
   avatar_url: string | null;
   is_new_user: boolean;
   has_accepted_rules: boolean;
+  is_profile_complete: boolean;
+  last_seen: string | null;
   created_at: string;
   updated_at: string;
 };
@@ -183,6 +185,7 @@ export type VideoSession = {
   user1_id: string;
   user2_id: string;
   status: 'pending' | 'active' | 'ended';
+  signal_data?: { senderId: string; signal: any }; // Added for WebRTC signaling
   started_at: string;
   ended_at: string | null;
 };
