@@ -111,13 +111,16 @@ export default function InstantChat() {
         }
 
         // Initialize new socket connection to Socket.IO server
-        const socketUrl = (import.meta as any).env?.VITE_SOCKETIO_URL || 'http://localhost:3002';
+        const socketUrl = import.meta.env.VITE_SOCKET_URL;
+        if (!socketUrl) {
+          throw new Error('Socket.IO server URL not configured');
+        }
         console.log('Connecting to Socket.IO server at:', socketUrl);
         
         // Create Socket.IO client with improved configuration
         socketRef.current = socketIO(socketUrl, {
           query: { userId: currentUser.id },
-          transports: ['polling', 'websocket'], // Start with polling, then upgrade to websocket
+          transports: ['websocket', 'polling'], // Prefer WebSocket, fallback to polling
           reconnectionAttempts: 5,
           reconnectionDelay: 1000,
           timeout: 20000,

@@ -26,20 +26,23 @@ interface ExtendedChatMessage {
   from?: string;
 }
 
-// Use environment variable for production or fallback to localhost for development
-// Force HTTPS protocol for WebSocket connections in production
-const SOCKET_URL = import.meta.env.VITE_SOCKET_SERVER_URL || 'http://localhost:3002';
+// Use environment variable for Socket.IO server URL
+const SOCKET_URL = import.meta.env.VITE_SOCKET_URL;
+if (!SOCKET_URL) {
+  throw new Error('Socket.IO server URL not configured');
+}
 console.log('Using Socket.IO server URL:', SOCKET_URL);
 
 // Socket.IO connection options
 const SOCKET_OPTIONS = {
   reconnection: true,
-  reconnectionAttempts: Infinity,
+  reconnectionAttempts: 5,
   reconnectionDelay: 1000,
   reconnectionDelayMax: 5000,
   timeout: 20000,
   autoConnect: true,
-  transports: ['websocket', 'polling']
+  transports: ['websocket', 'polling'], // Prefer WebSocket, fallback to polling
+  forceNew: true
 };
 const ICE_SERVERS = {
   iceServers: [
