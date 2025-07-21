@@ -1,9 +1,7 @@
 import React, { useEffect, useState } from 'react';
-import { useAuth } from '../hooks/useAuth';
 import { useNavigate } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
 import { Camera, Loader2, ArrowLeft } from 'lucide-react';
-import toast from 'react-hot-toast';
 import ProfilePicture from '../components/ProfilePicture';
 
 interface Profile {
@@ -26,7 +24,6 @@ interface Profile {
 
 export default function Profile() {
   const navigate = useNavigate();
-  const { user } = useAuth();
   const [loading, setLoading] = useState(true);
   const [uploading, setUploading] = useState(false);
   const [profile, setProfile] = useState<Profile | null>(null);
@@ -34,10 +31,8 @@ export default function Profile() {
 
   // Load profile data
   useEffect(() => {
-    if (user) {
-      loadProfile();
-    }
-  }, [user]);
+    loadProfile();
+  }, []);
 
   const loadProfile = async () => {
     try {
@@ -193,27 +188,14 @@ export default function Profile() {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (loading) return;
     
     try {
       const { data: { user } } = await supabase.auth.getUser();
-      if (!user || !profile) {
-        setLoading(false);
-        return;
-      }
+      if (!user || !profile) return;
 
       setLoading(true);
       
-      // Check if profile is complete
-      const isProfileComplete = !!profile.display_name && 
-        !!profile.bio && 
-        profile.interests && 
-        profile.interests.length > 0 && 
-        !!profile.age && 
-        !!profile.gender && 
-        !!profile.gender_preference;
-
-      // Clean up interests array - split by commas and trim whitespace, filter empty strings
+      // Clean up interests array - split by comma, trim whitespace, filter empty strings
       const cleanedInterests = profile.interests 
         ? (typeof profile.interests === 'string' 
             ? (profile.interests as string).split(',').map((i: string) => i.trim()).filter(Boolean)
@@ -226,7 +208,6 @@ export default function Profile() {
         display_name: profile.display_name || '',
         bio: profile.bio || '',
         interests: cleanedInterests,
-        is_profile_complete: isProfileComplete,
         updated_at: new Date().toISOString()
       };
       
@@ -245,15 +226,10 @@ export default function Profile() {
       if (error) throw error;
 
       // Update local state with cleaned interests
-      setProfile(prev => prev ? { ...prev, interests: cleanedInterests, is_profile_complete: isProfileComplete } : null);
-      
-      // Update states and show success message
-      setLoading(false);
-      setError(null);
-      toast.success('Profile updated successfully!');
-      
-      // Navigate to dashboard
-      navigate('/dashboard', { replace: true });
+      setProfile(prev => prev ? { ...prev, interests: cleanedInterests } : null);
+
+      setError('Profile updated successfully!');
+      setTimeout(() => setError(null), 3000);
     } catch (error) {
       console.error('Error updating profile:', error);
       let errorMessage = 'Failed to update profile';

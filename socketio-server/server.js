@@ -39,8 +39,8 @@ const io = new Server(server, {
   // Explicitly configure transport options
   transports: ['websocket', 'polling'],
   allowEIO3: true, // Allow Engine.IO v3 client compatibility
-  pingTimeout: 30000,
-  pingInterval: 25000
+  pingTimeout: 120000, // Increased to 2 minutes to tolerate background tabs
+  pingInterval: 30000, // Increased to 30 seconds for better tolerance
 });
 
 // Simple route to check if server is running
@@ -372,9 +372,10 @@ io.on('connection', (socket) => {
   socket.on('ice-candidate', (data) => {
     const partnerSocketId = activeConnections.get(data.to);
     if (partnerSocketId) {
+      // Relay the entire candidate object exactly as received
       io.to(partnerSocketId).emit('ice-candidate', {
-        candidate: data.candidate,
-        from: data.from
+        candidate: data.candidate, // full candidate object (should include candidate, sdpMid, sdpMLineIndex)
+        from: data.from || socket.userId
       });
     }
   });
@@ -420,14 +421,21 @@ io.on('connection', (socket) => {
       if (match.user1Id === userId || match.user2Id === userId) {
         const partnerId = match.user1Id === userId ? match.user2Id : match.user1Id;
         const partnerSocketId = activeConnections.get(partnerId);
-        
-        // Notify partner about disconnection
-        if (partnerSocketId) {
-          io.to(partnerSocketId).emit('partner-disconnected', { reason: 'Partner disconnected' });
-        }
-        
-        // Remove match
-        activeMatches.delete(matchId);
+        console.log(`[GracePeriod] Scheduling cleanup of matchId ${matchId} for disconnected user ${userId}`);
+        // Add a 1-minute grace period before removing the match and notifying partner
+        setTimeout(() => {
+          // Double-check they're still disconnected
+          if (!activeConnections.has(userId)) {
+            activeMatches.delete(matchId);
+            if (partnerSocketId) {
+              io.to(partnerSocketId).emit('partner-disconnected', { reason: 'Partner disconnected (after grace period)' });
+              console.log(`[GracePeriod] Notified partner (${partnerId}) about disconnection after grace period.`);
+            }
+            console.log(`[GracePeriod] Cleaned up matchId ${matchId} after grace period for user ${userId}`);
+          } else {
+            console.log(`[GracePeriod] User ${userId} reconnected, not cleaning up matchId ${matchId}`);
+          }
+        }, 60000); // 1 minute grace period
         break;
       }
     }

@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
-import { supabase } from '../../lib/supabaseClient';
-import { Shield, AlertTriangle, CheckCircle, XCircle, RefreshCw } from 'lucide-react';
+import { supabase } from '../../lib/supabase';
+import { Shield, CheckCircle, XCircle, RefreshCw } from 'lucide-react';
 
 interface VideoChatReport {
   id: string;

@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { supabase } from '../../lib/supabaseClient';
+import { supabase } from '../../lib/supabase';
 import { ChatMessage, UserProfile } from '../../types';
 
 interface ExtendedChatMessage extends ChatMessage {

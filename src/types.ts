@@ -26,3 +26,18 @@ export interface UserPreferences {
   gender: string;
   gender_preference: string;
 }
+
+export type AdminRole = 'viewer' | 'moderator' | 'super_admin';
+
+export interface AdminUser {
+  user_id: string;
+  role: AdminRole;
+  created_at: string;
+  created_by?: string;
+  last_sign_in?: string;
+  profile?: {
+    id: string;
+    name?: string;
+    avatar_url?: string | null;
+  };
+}

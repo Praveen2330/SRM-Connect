@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../hooks/useAuth';
-import { supabase } from '../lib/supabaseClient';
+import { supabase } from '../lib/supabase';
 
 // Define admin types here to avoid import errors
 type AdminRole = 'viewer' | 'moderator' | 'super_admin';

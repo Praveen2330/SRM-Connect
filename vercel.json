@@ -13,17 +13,5 @@
         "distDir": "dist"
       }
     }
-  ],
-  "env": {
-    "VITE_SUPABASE_URL": "https://pmmqhthyjvtfavylvimu.supabase.co",
-    "VITE_SUPABASE_ANON_KEY": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InBtbXFodGh5anZ0ZmF2eWx2aW11Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDMwODkxODEsImV4cCI6MjA1ODY2NTE4MX0.qLRYoOq9Pc6hMH0WZv7wQW8gp3qYOlCOj-KnYFSaTDw",
-    "VITE_SOCKET_URL": "https://srm-connect-socketio.onrender.com"
-  },
-  "build": {
-    "env": {
-      "VITE_SUPABASE_URL": "https://pmmqhthyjvtfavylvimu.supabase.co",
-      "VITE_SUPABASE_ANON_KEY": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InBtbXFodGh5anZ0ZmF2eWx2aW11Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDMwODkxODEsImV4cCI6MjA1ODY2NTE4MX0.qLRYoOq9Pc6hMH0WZv7wQW8gp3qYOlCOj-KnYFSaTDw",
-      "VITE_SOCKET_URL": "https://srm-connect-socketio.onrender.com"
-    }
-  }
-}
+  ]
+} 

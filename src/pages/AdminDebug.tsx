@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../hooks/useAuth';
-import { supabase } from '../lib/supabaseClient';
+import { supabase } from '../lib/supabase';
 
 // Direct access admin debug page
 const AdminDebug: React.FC = () => {

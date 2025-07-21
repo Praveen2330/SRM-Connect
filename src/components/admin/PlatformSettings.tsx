@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { supabase } from '../../lib/supabaseClient';
+import { supabase } from '../../lib/supabase';
 import { useAuth } from '../../hooks/useAuth';
 
 // Define the SystemSettings interface if it's not available in types

@@ -1,11 +1,34 @@
 import { createClient } from '@supabase/supabase-js';
 import { Database } from './database.types';
 
-const supabaseUrl = (import.meta as any).env?.VITE_SUPABASE_URL;
-const supabaseAnonKey = (import.meta as any).env?.VITE_SUPABASE_ANON_KEY;
+// Try to get environment variables from import.meta
+let supabaseUrl = (import.meta as any).env?.VITE_SUPABASE_URL;
+let supabaseAnonKey = (import.meta as any).env?.VITE_SUPABASE_ANON_KEY;
 
+// Fallback to directly accessing window.process.env if available
+if (!supabaseUrl && typeof window !== 'undefined' && (window as any).process?.env?.VITE_SUPABASE_URL) {
+  supabaseUrl = (window as any).process.env.VITE_SUPABASE_URL;
+}
+
+if (!supabaseAnonKey && typeof window !== 'undefined' && (window as any).process?.env?.VITE_SUPABASE_ANON_KEY) {
+  supabaseAnonKey = (window as any).process.env.VITE_SUPABASE_ANON_KEY;
+}
+
+// Fallback to hardcoded values from .env if environment variables aren't available
+// This is not ideal for production but will fix development issues
+if (!supabaseUrl) {
+  supabaseUrl = 'https://pmmqhthyjvtfavylvimu.supabase.co';
+  console.warn('Using fallback Supabase URL. Check your environment variables.');
+}
+
+if (!supabaseAnonKey) {
+  supabaseAnonKey = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InBtbXFodGh5anZ0ZmF2eWx2aW11Iiwicm9sZSI6ImFub24iLCJpYXQiOjE2ODM4ODQ2NjgsImV4cCI6MTk5OTQ2MDY2OH0.S0dyHzKxh1g-cjR6h0yfBDTGGzEsYWGkOdTtIrYeO3k';
+  console.warn('Using fallback Supabase anon key. Check your environment variables.');
+}
+
+// Validate that we have credentials
 if (!supabaseUrl || !supabaseAnonKey) {
-  throw new Error('Missing Supabase environment variables');
+  throw new Error('Missing Supabase credentials. Check your environment variables.');
 }
 
 // Create Supabase client with retry logic and better error handling
@@ -57,8 +80,7 @@ export type Profile = {
   avatar_url: string | null;
   is_new_user: boolean;
   has_accepted_rules: boolean;
-  is_profile_complete: boolean;
-  last_seen: string | null;
+  is_profile_complete?: boolean; // Added for profile completion flow
   created_at: string;
   updated_at: string;
 };

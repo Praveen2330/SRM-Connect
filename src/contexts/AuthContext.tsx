@@ -1,6 +1,6 @@
 import React, { createContext, useEffect, useState, useContext } from 'react';
 import { Session, User } from '@supabase/supabase-js';
-import { supabase } from '../lib/supabaseClient';
+import { supabase } from '../lib/supabase';
 
 type AdminRole = 'viewer' | 'moderator' | 'super_admin';
 

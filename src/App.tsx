@@ -1,6 +1,5 @@
 import { useState, useEffect } from 'react';
 import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
-import { supabase } from './lib/supabase';
 import LandingPage from './pages/LandingPage';
 import Dashboard from './pages/Dashboard';
 import Login from './pages/Login';
@@ -46,51 +45,6 @@ const RequireAuth = ({ children }: { children: JSX.Element }) => {
     return <Navigate to="/login" replace />;
   }
   
-  return children;
-};
-
-// Require Profile Completion for routes that need a complete profile
-const RequireProfileComplete = ({ children }: { children: JSX.Element }) => {
-  const { user } = useAuth();
-  const [loading, setLoading] = useState(true);
-  const [isComplete, setIsComplete] = useState(false);
-
-  useEffect(() => {
-    const checkProfileCompletion = async () => {
-      if (!user) return;
-
-      try {
-        const { data: profile, error } = await supabase
-          .from('profiles')
-          .select('is_profile_complete')
-          .eq('id', user.id)
-          .single();
-
-        if (error) throw error;
-        setIsComplete(profile?.is_profile_complete || false);
-      } catch (error) {
-        console.error('Error checking profile completion:', error);
-        setIsComplete(false);
-      } finally {
-        setLoading(false);
-      }
-    };
-
-    checkProfileCompletion();
-  }, [user]);
-
-  if (loading) {
-    return (
-      <div className="min-h-screen bg-black text-white flex items-center justify-center">
-        <div className="animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-white"></div>
-      </div>
-    );
-  }
-
-  if (!isComplete) {
-    return <Navigate to="/profile" replace />;
-  }
-
   return children;
 };
 
@@ -173,13 +127,13 @@ function App() {
             <Route path="/login" element={<Login />} />
             
             {/* Protected Routes */}
+            <Route path="/dashboard" element={<RequireAuth><Dashboard /></RequireAuth>} />
             <Route path="/profile" element={<RequireAuth><Profile /></RequireAuth>} />
-            <Route path="/dashboard" element={<RequireAuth><RequireProfileComplete><Dashboard /></RequireProfileComplete></RequireAuth>} />
-            <Route path="/video-chat" element={<RequireAuth><RequireProfileComplete><VideoChat /></RequireProfileComplete></RequireAuth>} />
-            <Route path="/messages" element={<RequireAuth><RequireProfileComplete><Messages /></RequireProfileComplete></RequireAuth>} />
-            <Route path="/instant-chat" element={<RequireAuth><RequireProfileComplete><InstantChat /></RequireProfileComplete></RequireAuth>} />
-            <Route path="/settings" element={<RequireAuth><RequireProfileComplete><Settings /></RequireProfileComplete></RequireAuth>} />
-            <Route path="/rules" element={<RequireAuth><RequireProfileComplete><Rules /></RequireProfileComplete></RequireAuth>} />
+            <Route path="/video-chat" element={<RequireAuth><VideoChat /></RequireAuth>} />
+            <Route path="/messages" element={<RequireAuth><Messages /></RequireAuth>} />
+            <Route path="/instant-chat" element={<RequireAuth><InstantChat /></RequireAuth>} />
+            <Route path="/settings" element={<RequireAuth><Settings /></RequireAuth>} />
+            <Route path="/rules" element={<RequireAuth><Rules /></RequireAuth>} />
             
             {/* Admin Routes */}
             <Route path="/admin" element={<RequireAdmin><Admin /></RequireAdmin>} />

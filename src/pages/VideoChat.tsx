@@ -2,7 +2,8 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import io from 'socket.io-client';
 import { useAuth } from '../contexts/AuthContext';
-import { supabase } from '../lib/supabaseClient';
+import { supabase } from '../lib/supabase';
+import { FileX2 } from 'lucide-react';
 
 // Define UserProfile interface as it's missing from types
 interface UserProfile {
@@ -26,23 +27,22 @@ interface ExtendedChatMessage {
   from?: string;
 }
 
-// Use environment variable for Socket.IO server URL
-const SOCKET_URL = import.meta.env.VITE_SOCKET_URL;
-if (!SOCKET_URL) {
-  throw new Error('Socket.IO server URL not configured');
-}
+// Use environment variable for production or fallback to localhost for development
+// Force HTTPS protocol for WebSocket connections in production
+const SOCKET_URL = import.meta.env.VITE_SOCKET_SERVER_URL || 'http://localhost:3002';
 console.log('Using Socket.IO server URL:', SOCKET_URL);
 
 // Socket.IO connection options
 const SOCKET_OPTIONS = {
   reconnection: true,
-  reconnectionAttempts: 5,
+  reconnectionAttempts: Infinity,
   reconnectionDelay: 1000,
   reconnectionDelayMax: 5000,
   timeout: 20000,
   autoConnect: true,
-  transports: ['websocket', 'polling'], // Prefer WebSocket, fallback to polling
-  forceNew: true
+  transports: ['websocket', 'polling'],
+  pingTimeout: 120000, 
+  pingInterval: 30000,
 };
 const ICE_SERVERS = {
   iceServers: [
@@ -51,7 +51,6 @@ const ICE_SERVERS = {
     { urls: 'stun:stun2.l.google.com:19302' },
     { urls: 'stun:stun3.l.google.com:19302' },
     { urls: 'stun:stun4.l.google.com:19302' },
-    // Free STUN servers from various providers
     { urls: 'stun:stun.stunprotocol.org:3478' },
     { urls: 'stun:stun.ekiga.net:3478' },
     { urls: 'stun:stun.ideasip.com:3478' }
@@ -59,9 +58,6 @@ const ICE_SERVERS = {
   iceCandidatePoolSize: 10
 };
 
-// WebRTC interfaces
-
-// Define a type for the authentication data returned by useAuth
 interface Auth {
   user: {
     id: string;
@@ -73,13 +69,12 @@ interface Auth {
   loading: boolean;
 }
 
-// handleMatchFound already uses the data type inline, so we don't need a separate type
-
 const VideoChat = (): JSX.Element => {
   const { user, loading } = useAuth() as Auth;
   const navigate = useNavigate();
   const socketRef = useRef<SocketType | null>(null);
   const peerConnectionRef = useRef<RTCPeerConnection | null>(null);
+  const pendingCandidatesRef = useRef<RTCIceCandidateInit[]>([]);
   const localStreamRef = useRef<MediaStream | null>(null);
   const remoteVideoRef = useRef<HTMLVideoElement | null>(null);
   const localVideoRef = useRef<HTMLVideoElement | null>(null);
@@ -219,6 +214,20 @@ const VideoChat = (): JSX.Element => {
   }, []);
 
   useEffect(() => {
+    // Add tab visibility handler for reconnect logic
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible' && socket && !socket.connected) {
+        console.log('[Tab] Tab became visible, attempting to reconnect socket...');
+        socket.connect();
+      }
+    };
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
+  }, [socket]);
+
+  useEffect(() => {
     if (loading) return;
     if (!user) {
       navigate('/');
@@ -279,40 +288,20 @@ const VideoChat = (): JSX.Element => {
     newSocket.on('reconnect_error', handleReconnectError);
     newSocket.on('connect_error', handleConnectError);
 
-    // Initialize camera and microphone
+    // Initialize camera
     const initCamera = async () => {
       try {
-        console.log('Requesting camera and microphone access...');
-        
-        // First, check if we have permissions
-        const permissions = await Promise.all([
-          navigator.permissions.query({ name: 'camera' as PermissionName }),
-          navigator.permissions.query({ name: 'microphone' as PermissionName })
-        ]);
-        
-        const [cameraPermission, micPermission] = permissions;
-        
-        if (cameraPermission.state === 'denied' || micPermission.state === 'denied') {
-          throw new Error('Camera or microphone permission denied. Please enable them in your browser settings.');
-        }
-        
-        // Request both camera and microphone access together
-        const stream = await navigator.mediaDevices.getUserMedia({
+        console.log('Requesting camera access...');
+        const stream = await navigator.mediaDevices.getUserMedia({ 
           video: {
             width: { ideal: 1280 },
             height: { ideal: 720 },
-            frameRate: { ideal: 30 },
-            facingMode: 'user'
-          },
-          audio: {
-            echoCancellation: true,
-            noiseSuppression: true,
-            autoGainControl: true
-          }
+            frameRate: { ideal: 30 }
+          }, 
+          audio: true 
         });
         
-        console.log('Camera and microphone access granted');
-        
+        console.log('Camera access granted, setting up local video');
         // Set the stream to state and refs
         setLocalStream(stream);
         localStreamRef.current = stream;
@@ -320,26 +309,13 @@ const VideoChat = (): JSX.Element => {
         // Ensure video plays immediately
         if (localVideoRef.current) {
           localVideoRef.current.srcObject = stream;
-          localVideoRef.current.muted = true; // Mute local video to prevent echo
           localVideoRef.current.play()
             .then(() => console.log('Local video playing'))
             .catch(e => console.error('Error playing local video:', e));
         }
-        
-        // Add event listeners for track ended events
-        stream.getTracks().forEach(track => {
-          track.onended = () => {
-            console.log(`${track.kind} track ended`);
-            setError(`${track.kind} access was lost. Please check your device settings.`);
-          };
-        });
       } catch (err) {
-        console.error('Error accessing media devices:', err);
-        setError(
-          err instanceof Error
-            ? err.message
-            : 'Could not access camera or microphone. Please ensure you have granted the necessary permissions.'
-        );
+        console.error('Error accessing camera:', err);
+        setError('Could not access camera or microphone');
       }
     };
 
@@ -385,17 +361,37 @@ const VideoChat = (): JSX.Element => {
       setRemoteStream(event.streams[0]);
       if (remoteVideoRef.current) {
         remoteVideoRef.current.srcObject = event.streams[0];
+        console.log('[ontrack] Set remote video srcObject:', event.streams[0]);
+        console.log('[ontrack] Remote video tracks:', event.streams[0].getTracks());
+        setTimeout(() => {
+          if (remoteVideoRef.current) {
+            console.log('[ontrack] Remote video readyState:', remoteVideoRef.current.readyState);
+            console.log('[ontrack] Remote video paused:', remoteVideoRef.current.paused);
+          }
+        }, 500);
+        // Ensure remote video plays (required for some browsers' autoplay policies)
+        remoteVideoRef.current.play()
+          .then(() => console.log('Remote video playing'))
+          .catch(e => console.error('Error playing remote video:', e));
       }
     };
 
     // ICE candidate handling
     pc.onicecandidate = (event: RTCPeerConnectionIceEvent) => {
       if (event.candidate && socket) {
-        console.log('Sending ICE candidate');
+        console.log('Sending ICE candidate', event.candidate);
+        // Always send the full candidate object
         socket.emit('ice-candidate', {
-          candidate: event.candidate,
-          to: partnerProfile?.id
+          candidate: {
+            candidate: event.candidate.candidate,
+            sdpMid: event.candidate.sdpMid,
+            sdpMLineIndex: event.candidate.sdpMLineIndex,
+            usernameFragment: event.candidate.usernameFragment // optional, but good for modern browsers
+          },
+          to: partnerProfile?.id,
+          from: user?.id
         });
+        console.log('Sent ICE candidate data:', event.candidate);
       } else if (!event.candidate) {
         console.log('All ICE candidates gathered');
       }
@@ -523,6 +519,18 @@ const VideoChat = (): JSX.Element => {
       setRemoteStream(event.streams[0]);
       if (remoteVideoRef.current) {
         remoteVideoRef.current.srcObject = event.streams[0];
+        console.log('[ontrack] Set remote video srcObject:', event.streams[0]);
+        console.log('[ontrack] Remote video tracks:', event.streams[0].getTracks());
+        setTimeout(() => {
+          if (remoteVideoRef.current) {
+            console.log('[ontrack] Remote video readyState:', remoteVideoRef.current.readyState);
+            console.log('[ontrack] Remote video paused:', remoteVideoRef.current.paused);
+          }
+        }, 500);
+        // Ensure remote video plays (required for some browsers' autoplay policies)
+        remoteVideoRef.current.play()
+          .then(() => console.log('Remote video playing'))
+          .catch(e => console.error('Error playing remote video:', e));
       }
     };
 
@@ -550,24 +558,29 @@ const VideoChat = (): JSX.Element => {
     if (!socket) return;
 
     const handleOffer = async (data: any) => {
-      console.log('Received offer:', data);
-      const pc = setupPeerConnection();
-      if (!pc || !socket) return;
-
       try {
-        // Make sure data has the required type property
-        const offerDescription = {
-          type: data.type || 'offer',
-          sdp: data.sdp
-        };
-        
+        const pc = setupPeerConnection();
+        if (!pc || !socket) return;
+        const offerDescription = data.offer;
         await pc.setRemoteDescription(new RTCSessionDescription(offerDescription));
+        console.log('Remote description set. Adding buffered ICE candidates...');
+        for (const candidate of pendingCandidatesRef.current) {
+          try {
+            await pc.addIceCandidate(new RTCIceCandidate(candidate));
+            console.log('Added buffered ICE candidate');
+          } catch (e) {
+            console.error('Error adding buffered ICE candidate:', e);
+          }
+        }
+        pendingCandidatesRef.current = [];
         const answer = await pc.createAnswer();
         await pc.setLocalDescription(answer);
-        
-        // Include recipient info when sending answer
         socket.emit('answer', {
-          answer: answer,
+          answer: {
+            type: answer.type,
+            sdp: answer.sdp,
+            from: user?.id
+          },
           to: data.from || data.partnerId
         });
         console.log('Sent answer to server');
@@ -589,6 +602,16 @@ const VideoChat = (): JSX.Element => {
         };
         
         await peerConnectionRef.current.setRemoteDescription(new RTCSessionDescription(answerDescription));
+        console.log('Remote description set. Adding buffered ICE candidates...');
+        for (const candidate of pendingCandidatesRef.current) {
+          try {
+            await peerConnectionRef.current.addIceCandidate(new RTCIceCandidate(candidate));
+            console.log('Added buffered ICE candidate');
+          } catch (e) {
+            console.error('Error adding buffered ICE candidate:', e);
+          }
+        }
+        pendingCandidatesRef.current = [];
         console.log('Successfully set remote description from answer');
       } catch (error) {
         console.error('Error handling answer:', error);
@@ -596,12 +619,25 @@ const VideoChat = (): JSX.Element => {
       }
     };
 
-    const handleIceCandidate = async (candidate: RTCIceCandidateInit) => {
+    const handleIceCandidate = async (data: any) => {
       if (!peerConnectionRef.current) return;
       try {
-        console.log('Received ICE candidate');
-        await peerConnectionRef.current.addIceCandidate(new RTCIceCandidate(candidate));
-        console.log('Added ICE candidate successfully');
+        if (data.candidate) {
+          // Defensive: check for required fields
+          if (!data.candidate.candidate || data.candidate.sdpMid == null || data.candidate.sdpMLineIndex == null) {
+            console.error('[ICE] Malformed ICE candidate received:', data.candidate);
+            return;
+          }
+          const pc = peerConnectionRef.current;
+          if (!pc.remoteDescription || !pc.remoteDescription.type) {
+            // Buffer candidate until remoteDescription is set
+            pendingCandidatesRef.current.push(data.candidate);
+            console.log('[ICE] Buffered candidate (remoteDescription not set yet)', data.candidate);
+          } else {
+            await pc.addIceCandidate(new RTCIceCandidate(data.candidate));
+            console.log('Added ICE candidate successfully');
+          }
+        }
       } catch (error) {
         console.error('Error adding ice candidate:', error);
       }
@@ -680,7 +716,7 @@ const VideoChat = (): JSX.Element => {
     };
     
     // Register socket event listeners
-    socket.on('match_found', handleMatchFound);
+    socket.on('match-found', handleMatchFound);
     socket.on('offer', handleOffer);
     socket.on('answer', handleAnswer);
     socket.on('ice-candidate', handleIceCandidate);
@@ -714,7 +750,12 @@ const VideoChat = (): JSX.Element => {
     };
 
     setMessages((prev) => [...prev, newMessage]);
-    socket.emit('message', { text: currentMessage.trim() });
+    socket.emit('chat-message', {
+      message: currentMessage.trim(),
+      from: user.id,
+      to: partnerProfile?.id,
+      senderName: user.user_metadata?.display_name || 'Anonymous'
+    });
     setCurrentMessage('');
     
     // Auto-scroll the message container to the bottom
@@ -725,6 +766,25 @@ const VideoChat = (): JSX.Element => {
       }, 100); // Add a small delay to ensure content is rendered
     }
   }, [socket, currentMessage, user]);
+
+  // Listen for incoming chat messages from the server
+  useEffect(() => {
+    if (!socket) return;
+    const handleIncomingMessage = (messageObj: any) => {
+      setMessages(prev => [...prev, {
+        id: messageObj.id || Date.now().toString(),
+        content: messageObj.message || messageObj.text || '',
+        timestamp: messageObj.timestamp || Date.now(),
+        fromSelf: false,
+        text: messageObj.message || messageObj.text || '',
+        from: messageObj.from || undefined,
+      }]);
+    };
+    socket.on('chat-message', handleIncomingMessage);
+    return () => {
+      socket.off('chat-message', handleIncomingMessage);
+    };
+  }, [socket]);
 
   return (
     <div className="min-h-screen bg-black text-white flex flex-col items-center">
