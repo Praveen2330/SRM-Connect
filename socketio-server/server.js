@@ -27,11 +27,18 @@ app.options('*', (req, res) => {
 // Get the port from environment variable or use 3002 as fallback
 const PORT = process.env.PORT || 3002;
 
+// Parse allowed origins from environment variable
+const allowedOrigins = process.env.ALLOWED_ORIGINS
+  ? process.env.ALLOWED_ORIGINS.split(',')
+  : ["https://srm-connect-nine.vercel.app", "http://localhost:3000"];
+
+console.log('Allowed origins for Socket.IO CORS:', allowedOrigins);
+
 // Configure Socket.IO with CORS settings
 const io = new Server(server, {
   cors: {
     origin: process.env.NODE_ENV === 'production' 
-      ? ["https://srm-connect-nine.vercel.app", "http://localhost:3000"]
+      ? allowedOrigins
       : "http://localhost:3000",
     methods: ["GET", "POST"],
     credentials: true,
