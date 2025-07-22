@@ -1,95 +1,50 @@
 # SRM Connect Deployment Instructions
 
-## Frontend Deployment (Vercel)
+This document provides an overview of the deployment process for SRM Connect. For detailed instructions, please refer to the specific deployment guides for each platform.
 
-1. **Prepare your frontend code**
-   - Make sure your `.env.production` file is properly configured with the following variables:
-     ```
-     VITE_SUPABASE_URL=https://pmmqhthyjvtfavylvimu.supabase.co
-     VITE_SUPABASE_ANON_KEY=your_supabase_anon_key
-     VITE_BACKEND_URL=https://srm-connect-backend.onrender.com
-     VITE_SOCKET_URL=https://srm-connect-socket.onrender.com
-     ```
+## Deployment Overview
 
-2. **Deploy to Vercel**
-   - Push your code to GitHub
-   - Log in to [Vercel](https://vercel.com)
-   - Create a new project and import your GitHub repository
-   - Configure the project:
-     - Framework Preset: Vite
-     - Build Command: `npm run build`
-     - Output Directory: `dist`
-   - Add the environment variables from your `.env.production` file
-   - Click "Deploy"
+SRM Connect consists of three main components that need to be deployed separately:
 
-3. **Verify Deployment**
-   - Once deployment is complete, Vercel will provide you with a URL
-   - Visit the URL to ensure your frontend is working correctly
-   - Test the connection to your backend and Socket.IO server
+1. **Frontend (React/Vite)** - Deployed to Vercel
+2. **Main Backend Server (Node.js)** - Deployed to Render
+3. **Socket.IO Server** - Deployed to Render
 
-## Backend Deployment (Render)
+## Deployment Scripts
 
-### Main Backend Server
+To simplify the deployment process, we've created the following scripts:
 
-1. **Prepare your backend code**
-   - Make sure your `render.yaml` file is properly configured
-   - Ensure your `Procfile` is set up correctly: `web: node server.js`
+- `deploy-vercel.sh` - Prepares the frontend for Vercel deployment
+- `backend/deploy.sh` - Prepares the main backend server for Render deployment
+- `socketio-server/deploy.sh` - Prepares the Socket.IO server for Render deployment
 
-2. **Deploy to Render**
-   - Push your code to GitHub
-   - Log in to [Render](https://render.com)
-   - Create a new Web Service
-   - Connect your GitHub repository
-   - Configure the service:
-     - Name: `srm-connect-backend`
-     - Environment: Node
-     - Build Command: `npm install`
-     - Start Command: `node server.js`
-   - Add the following environment variables:
-     - `PORT`: `10000` (Render uses this port by default)
-     - `NODE_ENV`: `production`
-     - `SUPABASE_URL`: Your Supabase project URL
-     - `SUPABASE_ANON_KEY`: Your Supabase anonymous key
-     - `FRONTEND_URL`: Your Vercel frontend URL (e.g., `https://srm-connect.vercel.app`)
-   - Click "Create Web Service"
+Run these scripts before deploying to ensure your configuration is correct.
 
-### Socket.IO Server
+## Detailed Deployment Guides
 
-1. **Prepare your Socket.IO server code**
-   - Make sure your `socketio-server/render.yaml` file is properly configured
-   - Create a `.env.production` file in the `socketio-server` directory with the following variables:
-     ```
-     PORT=10000
-     NODE_ENV=production
-     ALLOWED_ORIGINS=https://srm-connect-nine.vercel.app,https://srm-connect.vercel.app
-     ```
+- [Frontend Deployment to Vercel](./VERCEL_DEPLOYMENT.md)
+- [Backend Deployment to Render](./RENDER_DEPLOYMENT.md)
 
-2. **Deploy to Render**
-   - Push your code to GitHub
-   - Log in to [Render](https://render.com)
-   - Create a new Web Service
-   - Connect your GitHub repository
-   - Configure the service:
-     - Name: `srm-connect-socket`
-     - Environment: Node
-     - Build Command: `cd socketio-server && npm install`
-     - Start Command: `cd socketio-server && node server.js`
-   - Add the environment variables from your `.env.production` file
-   - Click "Create Web Service"
+## Deployment Process
 
-3. **Update Frontend Configuration**
-   - After both backend services are deployed, update your frontend `.env.production` file with the correct URLs
-   - Redeploy your frontend on Vercel
+1. **Deploy Backend Services First**
+   - Deploy the main backend server to Render following the [Backend Deployment Guide](./RENDER_DEPLOYMENT.md)
+   - Deploy the Socket.IO server to Render following the same guide
+   - Note the URLs of both deployed services
 
-## Testing the Deployment
+2. **Deploy Frontend**
+   - Update your frontend `.env.production` file with the backend and Socket.IO URLs
+   - Deploy the frontend to Vercel following the [Frontend Deployment Guide](./VERCEL_DEPLOYMENT.md)
 
-1. Visit your Vercel frontend URL
-2. Test the login functionality
-3. Test the chat and video features
-4. Check the browser console for any connection errors
+3. **Testing the Complete Deployment**
+   - Visit your Vercel frontend URL
+   - Test the login functionality
+   - Test the chat and video features
+   - Check the browser console for any connection errors
 
 ## Troubleshooting
 
-- If you encounter CORS issues, make sure the `ALLOWED_ORIGINS` environment variable includes your frontend URL
-- If Socket.IO connections fail, check that your frontend is using the correct Socket.IO server URL
-- For database connection issues, verify your Supabase credentials
+If you encounter issues during deployment, refer to the troubleshooting sections in the specific deployment guides:
+
+- [Frontend Troubleshooting](./VERCEL_DEPLOYMENT.md#troubleshooting)
+- [Backend Troubleshooting](./RENDER_DEPLOYMENT.md#troubleshooting)
