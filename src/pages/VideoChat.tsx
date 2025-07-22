@@ -359,20 +359,66 @@ const VideoChat = (): JSX.Element => {
     pc.ontrack = (event: RTCTrackEvent) => {
       console.log('Received remote track', event.streams);
       setRemoteStream(event.streams[0]);
+      
       if (remoteVideoRef.current) {
         remoteVideoRef.current.srcObject = event.streams[0];
         console.log('[ontrack] Set remote video srcObject:', event.streams[0]);
         console.log('[ontrack] Remote video tracks:', event.streams[0].getTracks());
-        setTimeout(() => {
-          if (remoteVideoRef.current) {
-            console.log('[ontrack] Remote video readyState:', remoteVideoRef.current.readyState);
-            console.log('[ontrack] Remote video paused:', remoteVideoRef.current.paused);
+        
+        // Check if tracks are muted
+        event.streams[0].getTracks().forEach(track => {
+          console.log(`Track ${track.kind} muted:`, track.muted);
+          
+          // Listen for unmute event
+          track.onunmute = () => {
+            console.log(`Track ${track.kind} unmuted`);
+            // Try to play video again when tracks become unmuted
+            if (remoteVideoRef.current && remoteVideoRef.current.paused) {
+              remoteVideoRef.current.play()
+                .then(() => console.log('Remote video playing after track unmute'))
+                .catch(e => console.error('Error playing remote video after unmute:', e));
+            }
+          };
+        });
+        
+        // Ensure video plays with muted audio first to bypass autoplay restrictions
+        remoteVideoRef.current.muted = true;
+        
+        // Add a visibility change listener to retry playing when tab becomes visible
+        const handleVisibilityChange = () => {
+          if (document.visibilityState === 'visible' && remoteVideoRef.current && remoteVideoRef.current.paused) {
+            remoteVideoRef.current.play()
+              .then(() => console.log('Remote video playing after visibility change'))
+              .catch(e => console.error('Error playing remote video after visibility change:', e));
           }
-        }, 500);
-        // Ensure remote video plays (required for some browsers' autoplay policies)
-        remoteVideoRef.current.play()
-          .then(() => console.log('Remote video playing'))
-          .catch(e => console.error('Error playing remote video:', e));
+        };
+        document.addEventListener('visibilitychange', handleVisibilityChange);
+        
+        // Try playing the video immediately
+        const playPromise = remoteVideoRef.current.play();
+        if (playPromise !== undefined) {
+          playPromise
+            .then(() => {
+              console.log('Remote video playing successfully');
+              // After successful play, you can unmute if needed
+              // remoteVideoRef.current.muted = false;
+            })
+            .catch(e => {
+              console.error('Error playing remote video:', e);
+              // Add a click event listener to the video container to play on user interaction
+              const videoContainer = remoteVideoRef.current.parentElement;
+              if (videoContainer) {
+                videoContainer.addEventListener('click', () => {
+                  if (remoteVideoRef.current && remoteVideoRef.current.paused) {
+                    remoteVideoRef.current.play()
+                      .then(() => console.log('Remote video playing after user interaction'))
+                      .catch(err => console.error('Still cannot play remote video:', err));
+                  }
+                });
+                console.log('Added click handler to play video on user interaction');
+              }
+            });
+        }
       }
     };
 
@@ -380,18 +426,12 @@ const VideoChat = (): JSX.Element => {
     pc.onicecandidate = (event: RTCPeerConnectionIceEvent) => {
       if (event.candidate && socket) {
         console.log('Sending ICE candidate', event.candidate);
-        // Always send the full candidate object
+        // Always send the full candidate object with the same structure
         socket.emit('ice-candidate', {
-          candidate: {
-            candidate: event.candidate.candidate,
-            sdpMid: event.candidate.sdpMid,
-            sdpMLineIndex: event.candidate.sdpMLineIndex,
-            usernameFragment: event.candidate.usernameFragment // optional, but good for modern browsers
-          },
+          candidate: event.candidate,
           to: partnerProfile?.id,
           from: user?.id
         });
-        console.log('Sent ICE candidate data:', event.candidate);
       } else if (!event.candidate) {
         console.log('All ICE candidates gathered');
       }
@@ -517,26 +557,76 @@ const VideoChat = (): JSX.Element => {
 
     pc.ontrack = (event: RTCTrackEvent) => {
       setRemoteStream(event.streams[0]);
+      
       if (remoteVideoRef.current) {
         remoteVideoRef.current.srcObject = event.streams[0];
         console.log('[ontrack] Set remote video srcObject:', event.streams[0]);
         console.log('[ontrack] Remote video tracks:', event.streams[0].getTracks());
-        setTimeout(() => {
-          if (remoteVideoRef.current) {
-            console.log('[ontrack] Remote video readyState:', remoteVideoRef.current.readyState);
-            console.log('[ontrack] Remote video paused:', remoteVideoRef.current.paused);
+        
+        // Check if tracks are muted
+        event.streams[0].getTracks().forEach(track => {
+          console.log(`Track ${track.kind} muted:`, track.muted);
+          
+          // Listen for unmute event
+          track.onunmute = () => {
+            console.log(`Track ${track.kind} unmuted`);
+            // Try to play video again when tracks become unmuted
+            if (remoteVideoRef.current && remoteVideoRef.current.paused) {
+              remoteVideoRef.current.play()
+                .then(() => console.log('Remote video playing after track unmute'))
+                .catch(e => console.error('Error playing remote video after unmute:', e));
+            }
+          };
+        });
+        
+        // Ensure video plays with muted audio first to bypass autoplay restrictions
+        remoteVideoRef.current.muted = true;
+        
+        // Add a visibility change listener to retry playing when tab becomes visible
+        const handleVisibilityChange = () => {
+          if (document.visibilityState === 'visible' && remoteVideoRef.current && remoteVideoRef.current.paused) {
+            remoteVideoRef.current.play()
+              .then(() => console.log('Remote video playing after visibility change'))
+              .catch(e => console.error('Error playing remote video after visibility change:', e));
           }
-        }, 500);
-        // Ensure remote video plays (required for some browsers' autoplay policies)
-        remoteVideoRef.current.play()
-          .then(() => console.log('Remote video playing'))
-          .catch(e => console.error('Error playing remote video:', e));
+        };
+        document.addEventListener('visibilitychange', handleVisibilityChange);
+        
+        // Try playing the video immediately
+        const playPromise = remoteVideoRef.current.play();
+        if (playPromise !== undefined) {
+          playPromise
+            .then(() => {
+              console.log('Remote video playing successfully');
+              // After successful play, you can unmute if needed
+              // remoteVideoRef.current.muted = false;
+            })
+            .catch(e => {
+              console.error('Error playing remote video:', e);
+              // Add a click event listener to the video container to play on user interaction
+              const videoContainer = remoteVideoRef.current.parentElement;
+              if (videoContainer) {
+                videoContainer.addEventListener('click', () => {
+                  if (remoteVideoRef.current && remoteVideoRef.current.paused) {
+                    remoteVideoRef.current.play()
+                      .then(() => console.log('Remote video playing after user interaction'))
+                      .catch(err => console.error('Still cannot play remote video:', err));
+                  }
+                });
+                console.log('Added click handler to play video on user interaction');
+              }
+            });
+        }
       }
     };
 
     pc.onicecandidate = (event: RTCPeerConnectionIceEvent) => {
       if (event.candidate) {
-        socket.emit('ice-candidate', event.candidate);
+        socket.emit('ice-candidate', {
+          candidate: event.candidate,
+          to: partnerProfile?.id,
+          from: user?.id
+        });
       }
     };
     
@@ -546,6 +636,14 @@ const VideoChat = (): JSX.Element => {
       if (pc.connectionState === 'connected') {
         // Reset reconnection attempts when successfully connected
         setReconnectionAttempts(0);
+        console.log('WebRTC connection fully established!');
+        
+        // Force a re-play attempt when connection is fully established
+        if (remoteVideoRef.current && remoteVideoRef.current.paused) {
+          remoteVideoRef.current.play()
+            .then(() => console.log('Remote video playing after connection established'))
+            .catch(e => console.error('Still cannot play remote video:', e));
+        }
       }
     };
 

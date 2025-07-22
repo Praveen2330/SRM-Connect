@@ -33,7 +33,7 @@ const ChatReportViewer: React.FC<ChatReportViewerProps> = ({ canManage, updateCo
 
   useEffect(() => {
     // Connect to Socket.IO server
-    const socketUrl = import.meta.env.VITE_SOCKETIO_URL || 'http://localhost:3002';
+    const socketUrl = import.meta.env.VITE_SOCKET_URL || 'http://localhost:3002';
     socketRef.current = socketIO(socketUrl, {
       transports: ['polling', 'websocket']
     });

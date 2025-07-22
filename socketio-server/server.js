@@ -4,6 +4,7 @@ const http = require('http');
 const { Server } = require('socket.io');
 const cors = require('cors');
 const { v4: uuidv4 } = require('uuid');
+const { createClient } = require('@supabase/supabase-js'); // Add this line
 
 const app = express();
 const server = http.createServer(app);
@@ -203,7 +204,7 @@ io.on('connection', (socket) => {
     console.log('Report received:', reportData);
     
     try {
-      // Store the report in memory
+      // Create report object
       const report = {
         id: Date.now().toString(),
         reporterId: reportData.reporterId,
@@ -215,8 +216,37 @@ io.on('connection', (socket) => {
         status: 'pending'
       };
       
+      // Store in memory (as fallback)
       userReports.push(report);
-      console.log(`Report stored. Total reports: ${userReports.length}`);
+      
+      // Store in Supabase if available
+      if (supabase) {
+        try {
+          const { data, error } = await supabase
+            .from('reported_chats')
+            .insert([
+              {
+                reporter_id: reportData.reporterId,
+                reported_id: reportData.reportedUserId,
+                chat_session_id: reportData.sessionId || uuidv4(),
+                reason: reportData.reason,
+                description: reportData.description || '',
+                transcript: reportData.chatTranscript || [],
+                status: 'pending'
+              }
+            ]);
+            
+          if (error) {
+            console.error('Error storing report in database:', error);
+          } else {
+            console.log('Report stored in database successfully');
+          }
+        } catch (dbError) {
+          console.error('Exception storing report in database:', dbError);
+        }
+      }
+      
+      console.log(`Report stored. Total in-memory reports: ${userReports.length}`);
       
       // Acknowledge receipt
       socket.emit('report_submitted', { success: true });
@@ -227,16 +257,38 @@ io.on('connection', (socket) => {
   });
   
   // Admin endpoint to get all reports
-  socket.on('admin_get_reports', () => {
-    console.log('Admin requested reports, sending:', userReports.length, 'reports');
-    socket.emit('admin_reports', userReports);
+  socket.on('admin_get_reports', async () => {
+    if (supabase) {
+      try {
+        // Fetch reports from database
+        const { data, error } = await supabase
+          .from('reported_chats')
+          .select('*')
+          .order('reported_at', { ascending: false });
+          
+        if (error) {
+          console.error('Error fetching reports from database:', error);
+          socket.emit('admin_reports', userReports); // Fallback to in-memory reports
+        } else {
+          console.log(`Sending ${data.length} reports from database to admin`);
+          socket.emit('admin_reports', data);
+        }
+      } catch (dbError) {
+        console.error('Exception fetching reports from database:', dbError);
+        socket.emit('admin_reports', userReports); // Fallback to in-memory reports
+      }
+    } else {
+      console.log('Admin requested reports, sending in-memory reports:', userReports.length);
+      socket.emit('admin_reports', userReports);
+    }
   });
   
   // Admin endpoint to update report status
-  socket.on('admin_update_report', (data) => {
+  socket.on('admin_update_report', async (data) => {
     const { reportId, status, adminNotes } = data;
-    const reportIndex = userReports.findIndex(r => r.id === reportId);
     
+    // Update in-memory report
+    const reportIndex = userReports.findIndex(r => r.id === reportId);
     if (reportIndex !== -1) {
       userReports[reportIndex] = {
         ...userReports[reportIndex],
@@ -244,15 +296,71 @@ io.on('connection', (socket) => {
         adminNotes: adminNotes || userReports[reportIndex].adminNotes,
         reviewedAt: new Date().toISOString()
       };
-      socket.emit('admin_report_updated', { success: true, report: userReports[reportIndex] });
-      console.log(`Report ${reportId} updated to status: ${status}`);
+    }
+    
+    // Update in database if available
+    if (supabase) {
+      try {
+        const { data: updateData, error } = await supabase
+          .from('reported_chats')
+          .update({
+            status: status,
+            admin_notes: adminNotes,
+            reviewed_at: new Date().toISOString()
+          })
+          .eq('id', reportId);
+          
+        if (error) {
+          console.error('Error updating report in database:', error);
+          // Still send success for in-memory update
+          if (reportIndex !== -1) {
+            socket.emit('admin_report_updated', { 
+              success: true, 
+              report: userReports[reportIndex],
+              note: 'Updated in memory only, database update failed'
+            });
+          } else {
+            socket.emit('admin_report_updated', { 
+              success: false, 
+              error: 'Report not found in memory and database update failed'
+            });
+          }
+        } else {
+          console.log(`Report ${reportId} updated in database to status: ${status}`);
+          socket.emit('admin_report_updated', { 
+            success: true, 
+            report: reportIndex !== -1 ? userReports[reportIndex] : { id: reportId, status }
+          });
+        }
+      } catch (dbError) {
+        console.error('Exception updating report in database:', dbError);
+        // Still send success for in-memory update
+        if (reportIndex !== -1) {
+          socket.emit('admin_report_updated', { 
+            success: true, 
+            report: userReports[reportIndex],
+            note: 'Updated in memory only, database update failed'
+          });
+        } else {
+          socket.emit('admin_report_updated', { 
+            success: false, 
+            error: 'Report not found in memory and database update failed'
+          });
+        }
+      }
     } else {
-      socket.emit('admin_report_updated', { success: false, error: 'Report not found' });
+      // No database, just use in-memory update
+      if (reportIndex !== -1) {
+        socket.emit('admin_report_updated', { success: true, report: userReports[reportIndex] });
+        console.log(`Report ${reportId} updated in memory to status: ${status}`);
+      } else {
+        socket.emit('admin_report_updated', { success: false, error: 'Report not found' });
+      }
     }
   });
   
   // Legacy report handler - keeping for backward compatibility
-  socket.on('report-user', (data) => {
+  socket.on('report-user', async (data) => {
     console.log(`Legacy report received from ${data.reporterId} for user ${data.reportedId}: ${data.reason}`);
     
     // Store in the new format as well
@@ -271,6 +379,8 @@ io.on('connection', (socket) => {
     
     // Find the chat session
     let chatId = null;
+    let transcript = [];
+    
     for (const [id, chat] of activeInstantChats.entries()) {
       if ((chat.user1Id === data.reporterId && chat.user2Id === data.reportedId) ||
           (chat.user2Id === data.reporterId && chat.user1Id === data.reportedId)) {
@@ -281,7 +391,34 @@ io.on('connection', (socket) => {
     
     if (chatId) {
       // Get chat transcript from buffer
-      const transcript = chatMessagesBuffer.get(chatId) || [];
+      transcript = chatMessagesBuffer.get(chatId) || [];
+      
+      // Store in Supabase if available
+      if (supabase) {
+        try {
+          const { data: insertData, error } = await supabase
+            .from('reported_chats')
+            .insert([
+              {
+                reporter_id: data.reporterId,
+                reported_id: data.reportedId,
+                chat_session_id: chatId,
+                reason: data.reason,
+                description: data.description || '',
+                transcript: transcript,
+                status: 'pending'
+              }
+            ]);
+            
+          if (error) {
+            console.error('Error storing legacy report in database:', error);
+          } else {
+            console.log('Legacy report stored in database successfully');
+          }
+        } catch (dbError) {
+          console.error('Exception storing legacy report in database:', dbError);
+        }
+      }
       
       // Send transcript with the report
       socket.emit('report-received', { 
@@ -601,6 +738,28 @@ function endInstantChat(userId1, userId2) {
       break;
     }
   }
+}
+
+// Move this code block from the end of the file to before the server.listen call (around line 740)
+
+// Initialize Supabase client
+const supabaseUrl = process.env.SUPABASE_URL;
+const supabaseAnonKey = process.env.SUPABASE_ANON_KEY;
+
+if (!supabaseUrl || !supabaseAnonKey) {
+  console.warn('Missing Supabase credentials in environment variables. Reports will only be stored in memory.');
+}
+
+let supabase;
+if (supabaseUrl && supabaseAnonKey) {
+  supabase = createClient(supabaseUrl, supabaseAnonKey, {
+    auth: {
+      persistSession: false,
+      autoRefreshToken: true,
+      detectSessionInUrl: false
+    }
+  });
+  console.log('Supabase client initialized');
 }
 
 // Start the server

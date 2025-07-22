@@ -1,6 +1,6 @@
 import { useEffect, useState, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { supabase } from '../lib/supabaseClient';
+import { supabase } from '../lib/supabase';
 import socketIO from 'socket.io-client';
 import { 
   Send, RefreshCw, Flag, ThumbsUp, X, Clock, 
@@ -111,7 +111,7 @@ export default function InstantChat() {
         }
 
         // Initialize new socket connection to Socket.IO server
-        const socketUrl = import.meta.env.VITE_SOCKET_URL;
+        const socketUrl = import.meta.env.VITE_SOCKET_URL || 'http://localhost:3002';
         if (!socketUrl) {
           throw new Error('Socket.IO server URL not configured');
         }
