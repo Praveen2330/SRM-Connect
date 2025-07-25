@@ -31,7 +31,7 @@ const PORT = process.env.PORT || 3002;
 const io = new Server(server, {
   cors: {
     origin: process.env.NODE_ENV === 'production' 
-      ? ["https://srm-connect-nine.vercel.app", "http://localhost:3000"]
+      ? process.env.ALLOWED_ORIGINS ? process.env.ALLOWED_ORIGINS.split(',') : ["https://srm-connect-nine.vercel.app", "http://localhost:3000", "https://srm-connect.vercel.app"]
       : "http://localhost:3000",
     methods: ["GET", "POST"],
     credentials: true,
@@ -42,6 +42,7 @@ const io = new Server(server, {
   allowEIO3: true, // Allow Engine.IO v3 client compatibility
   pingTimeout: 120000, // Increased to 2 minutes to tolerate background tabs
   pingInterval: 30000, // Increased to 30 seconds for better tolerance
+  path: '/',
 });
 
 // Simple route to check if server is running
