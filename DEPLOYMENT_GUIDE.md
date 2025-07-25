@@ -96,10 +96,12 @@ After deploying both backend services, update your frontend environment variable
 
 ## Troubleshooting
 
-1. **CORS Issues**: Ensure that your frontend URL is correctly set in the `FRONTEND_URL` environment variable on both backend services.
+1. **Vercel Configuration Errors**: If you see an error message stating "If 'rewrites', 'redirects', 'headers', 'cleanUrls' or 'trailingSlash' are used, then 'routes' cannot be present", make sure your vercel.json file only uses either 'routes' OR 'rewrites', not both simultaneously. The recommended approach is to use 'rewrites' as it's more modern and flexible.
 
-2. **Socket.IO Connection Errors**: Check that your frontend is using the correct socket.io server URL.
+2. **CORS Issues**: Ensure that your frontend URL is correctly set in the `FRONTEND_URL` environment variable on both backend services.
 
-3. **Application Errors**: Check the Render logs for details on any server-side errors.
+3. **Socket.IO Connection Errors**: Check that your frontend is using the correct socket.io server URL.
 
-4. **Sleep Mode**: The free Render plan puts your service to sleep after 15 minutes of inactivity. The first request after sleep will be slow. Consider upgrading to a paid plan for production use.
+4. **Application Errors**: Check the Render logs for details on any server-side errors.
+
+5. **Sleep Mode**: The free Render plan puts your service to sleep after 15 minutes of inactivity. The first request after sleep will be slow. Consider upgrading to a paid plan for production use.
