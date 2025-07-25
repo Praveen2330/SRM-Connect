@@ -1,0 +1,18 @@
+services:
+  - type: web
+    name: srm-connect-backend
+    env: node
+    buildCommand: npm install
+    startCommand: npm start
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 10000
+      - key: SUPABASE_URL
+        fromEnv: SUPABASE_URL
+      - key: SUPABASE_ANON_KEY
+        fromEnv: SUPABASE_ANON_KEY
+      - key: FRONTEND_URL
+        value: https://srm-connect.vercel.app
+    plan: free
