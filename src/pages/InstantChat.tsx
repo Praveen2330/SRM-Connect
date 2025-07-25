@@ -111,7 +111,7 @@ export default function InstantChat() {
         }
 
         // Initialize new socket connection to Socket.IO server
-        const socketUrl = import.meta.env.VITE_SOCKET_URL || 'http://localhost:3002';
+        const socketUrl = import.meta.env.VITE_SOCKET_URL;
         if (!socketUrl) {
           throw new Error('Socket.IO server URL not configured');
         }

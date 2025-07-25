@@ -62,10 +62,12 @@ export default defineConfig(({ mode }) => {
           changeOrigin: true,
           rewrite: (path) => path.replace(/^\/api/, '')
         },
-        '/socket.io': {
-          target: 'http://localhost:3002',
-          ws: true
-        }
+        ...(mode === 'development' ? {
+          '/socket.io': {
+            target: 'http://localhost:3002',
+            ws: true
+          }
+        } : {})
       }
     },
   }
