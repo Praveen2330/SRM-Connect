@@ -119,21 +119,23 @@ const VideoChat = (): JSX.Element => {
   const initCameraRef = useRef<() => Promise<void>>();
 const remoteMediaStreamRef = useRef<MediaStream | null>(null);
 
-  // Ensure matchmaking only starts when both socket and localStream are ready
-useEffect(() => {
-  if (socket && socket.connected && localStream && user && !isMatching) {
-    handleFindMatch();
-  }
-}, [socket, localStream, user, isMatching]);
+  // (removed: useEffect for auto-matchmaking on socket/localStream ready)
 
   const handleFindMatch = async () => {
     if (!socket || !user) return;
+
+    // Don't re-join queue if we're already searching or already in a call
+    if (isMatching || isCalling) {
+      console.log('Already matching or in a call, skipping join_queue');
+      return;
+    }
+
     setIsMatching(true);
     console.log('Sending join_queue request');
     socket.emit('join_queue', {
       userId: user.id,
       displayName: user.user_metadata?.display_name || 'Anonymous',
-      email: user.email
+      email: user.email,
     });
   };
 
