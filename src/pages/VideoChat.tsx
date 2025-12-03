@@ -533,92 +533,47 @@ useEffect(() => {
       }
     });
     pc.ontrack = (event: RTCTrackEvent) => {
-      console.log('Received remote track', event.streams, event.track);
-      if (!remoteMediaStreamRef.current) {
-        remoteMediaStreamRef.current = new MediaStream();
-      }
-      const remoteStream = remoteMediaStreamRef.current;
+      console.log('[ontrack] Received remote track', event.track);
+      const [remoteStream] = event.streams;
 
-      // Add new track if not already present
-      if (!remoteStream.getTracks().find(t => t.id === event.track.id)) {
-        remoteStream.addTrack(event.track);
-        console.log('[ontrack] Added track to remote stream:', event.track);
+      if (!remoteVideoRef.current) {
+        console.warn('[ontrack] remoteVideoRef is null');
+        return;
       }
 
-      setRemoteStream(remoteStream);
+      const videoEl = remoteVideoRef.current as HTMLVideoElement;
 
-      if (remoteVideoRef.current) {
-        // Clean up previous srcObject if needed
-        if (remoteVideoRef.current.srcObject && remoteVideoRef.current.srcObject !== remoteStream) {
-          // Stop previous tracks
-          const prevTracks = (remoteVideoRef.current.srcObject as MediaStream)?.getTracks?.();
-          prevTracks?.forEach(track => track.stop());
-          remoteVideoRef.current.srcObject = null;
-          remoteVideoRef.current.load();
-        }
-        remoteVideoRef.current.style.display = 'block';
-        remoteVideoRef.current.srcObject = remoteStream;
-        console.log('[ontrack] Set remote video srcObject:', remoteStream);
-        if (remoteVideoRef.current.parentElement) {
-          remoteVideoRef.current.parentElement.style.display = 'flex';
-        }
-        remoteStream.getTracks().forEach(track => {
-          
-          // Listen for unmute event
-          track.onunmute = () => {
-            console.log(`Track ${track.kind} unmuted`);
-            // Try to play video again when tracks become unmuted
-            if (remoteVideoRef.current && remoteVideoRef.current.paused) {
-              remoteVideoRef.current.play()
-                .then(() => console.log('Remote video playing after track unmute'))
-                .catch(e => console.error('Error playing remote video after unmute:', e));
+      // Only set srcObject if it's different
+      if (videoEl.srcObject !== remoteStream) {
+        console.log('[ontrack] Setting remote video srcObject');
+        videoEl.srcObject = remoteStream;
+      }
+
+      const attemptPlay = () => {
+        videoEl
+          .play()
+          .then(() => console.log('[ontrack] Remote video playing'))
+          .catch((err) => {
+            if (err.name === 'AbortError') {
+              console.warn('[ontrack] play() aborted, ignoring');
+              return;
             }
-          };
-          
-          // Listen for ended event
-          track.onended = () => {
-            console.log(`Track ${track.kind} ended`);
-          };
-        });
-        
-        // Ensure video plays with muted audio first to bypass autoplay restrictions
-        remoteVideoRef.current.muted = true;
-        
-        // Add a visibility change listener to retry playing when tab becomes visible
-        const handleVisibilityChange = () => {
-          if (document.visibilityState === 'visible' && remoteVideoRef.current && remoteVideoRef.current.paused) {
-            remoteVideoRef.current.play()
-              .then(() => console.log('Remote video playing after visibility change'))
-              .catch(e => console.error('Error playing remote video after visibility change:', e));
-          }
+            console.warn('[ontrack] play blocked, waiting for user interaction');
+            const resume = () => {
+              videoEl.play().catch(() => {});
+              document.removeEventListener('click', resume);
+            };
+            document.addEventListener('click', resume, { once: true });
+          });
+      };
+
+      if (videoEl.readyState >= HTMLMediaElement.HAVE_ENOUGH_DATA) {
+        attemptPlay();
+      } else {
+        videoEl.onloadeddata = () => {
+          videoEl.onloadeddata = null;
+          attemptPlay();
         };
-        document.addEventListener('visibilitychange', handleVisibilityChange);
-        
-        // Try playing the video immediately
-        const playPromise = remoteVideoRef.current?.play();
-        if (playPromise !== undefined) {
-          playPromise
-            .then(() => {
-              console.log('Remote video playing successfully');
-              // After successful play, you can unmute if needed
-              // remoteVideoRef.current.muted = false;
-            })
-            .catch(e => {
-              console.error('Error playing remote video:', e);
-              // Add a click event listener to the video container to play on user interaction
-              const videoContainer = remoteVideoRef.current?.parentElement;
-              if (videoContainer) {
-                videoContainer.addEventListener('click', () => {
-                  if (remoteVideoRef.current && remoteVideoRef.current.paused) {
-                    remoteVideoRef.current.play()
-                      .then(() => console.log('Remote video playing after user interaction'))
-                      .catch(err => console.error('Still cannot play remote video:', err));
-                  }
-                });
-                console.log('Added click handler to play video on user interaction');
-              }
-            });
-        }
       }
     };
 
