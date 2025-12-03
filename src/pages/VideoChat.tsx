@@ -28,11 +28,12 @@ interface ExtendedChatMessage {
 }
 
 // Use environment variable for production or fallback to localhost for development
-// Socket.IO will automatically handle protocol conversion (http->ws, https->wss)
-// Ensure we're using the correct protocol and port
-const SOCKET_URL = import.meta.env.VITE_SOCKET_SERVER_URL || 
-  (window.location.hostname === 'localhost' ? 'http://localhost:3002' : 
-   `${window.location.protocol}//${window.location.hostname}:3002`);
+// In production, force use of Render Socket.IO server
+const SOCKET_URL =
+  import.meta.env.VITE_SOCKET_SERVER_URL ||
+  (window.location.hostname === 'localhost'
+    ? 'http://localhost:3002'
+    : 'https://srm-connect-socketio.onrender.com');
 
 // Log the socket URL and current environment
 console.log('Using Socket.IO server URL:', SOCKET_URL);
