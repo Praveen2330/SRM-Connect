@@ -20,162 +20,141 @@ export default function VideoCall({ sessionId, userId, onEndCall }: VideoCallPro
   const peerRef = useRef<SimplePeer.Instance | null>(null);
 
   useEffect(() => {
-    const initializeMedia = async () => {
+    const initialize = async () => {
       try {
+        const { data } = await supabase
+          .from("video_sessions")
+          .select("*")
+          .eq("id", sessionId)
+          .single();
+
+        const isInitiator = data.caller_id === userId;
+
         const stream = await navigator.mediaDevices.getUserMedia({
           video: true,
           audio: true
         });
+
         setLocalStream(stream);
-        if (localVideoRef.current) {
-          localVideoRef.current.srcObject = stream;
-        }
-        initializePeerConnection(stream);
+        if (localVideoRef.current) localVideoRef.current.srcObject = stream;
+
+        initializePeerConnection(stream, isInitiator);
       } catch (error) {
-        console.error('Error accessing media devices:', error);
+        console.error("Error setting up video call:", error);
       }
     };
 
-    initializeMedia();
+    initialize();
 
     return () => {
-      localStream?.getTracks().forEach(track => track.stop());
       peerRef.current?.destroy();
+      localStream?.getTracks().forEach((t) => t.stop());
     };
   }, [sessionId]);
 
-  const initializePeerConnection = (stream: MediaStream) => {
+  const initializePeerConnection = (stream: MediaStream, isInitiator: boolean) => {
     const peer = new SimplePeer({
-      initiator: true,
-      stream: stream,
+      initiator: isInitiator,
+      stream,
       trickle: false
     });
-    peer.on('signal', async data => {
-      // Send the signal data to the other peer through Supabase
-      // Include sender ID to differentiate signals
+
+    peer.on("signal", async (signal) => {
       await supabase
-        .from('video_sessions')
+        .from("video_sessions")
         .update({
-          signal_data: {
-            senderId: userId, // Assuming userId is available in scope
-            signal: data
-          }
+          signal_data: { senderId: userId, signal }
         })
-        .eq('id', sessionId);
+        .eq("id", sessionId);
     });
 
-      peer.on('stream', stream => {
-        setRemoteStream(stream);
-        if (remoteVideoRef.current) {
-          remoteVideoRef.current.srcObject = stream;
-        }
-      });
+    peer.on("stream", (remote) => {
+      setRemoteStream(remote);
+      if (remoteVideoRef.current) remoteVideoRef.current.srcObject = remote;
+    });
 
-      peerRef.current = peer;
+    peerRef.current = peer;
 
-      // Listen for the other peer's signal
-      const subscription = supabase
-        .channel(`video_session_${sessionId}`)
-        .on('postgres_changes', {
-          event: 'UPDATE',
-          schema: 'public',
-          table: 'video_sessions',
+    supabase
+      .channel(`video_session_${sessionId}`)
+      .on(
+        "postgres_changes",
+        {
+          event: "UPDATE",
+          schema: "public",
+          table: "video_sessions",
           filter: `id=eq.${sessionId}`,
-        }, async (payload) => {
+        },
+        (payload) => {
           const session = payload.new as VideoSession;
-          if (session.signal_data && peer) {
-            peer.signal(session.signal_data.signal);
-          }
-        })
-        .subscribe();
+          if (!session.signal_data) return;
 
-      return () => {
-        subscription.unsubscribe();
-      };
-    };
+          const { senderId, signal } = session.signal_data;
+          if (senderId === userId) return; // ⛔ ignore own signal
 
-    const toggleMute = () => {
-      if (localStream) {
-        localStream.getAudioTracks().forEach(track => {
-          track.enabled = !track.enabled;
-        });
-        setIsMuted(!isMuted);
-      }
-    };
+          peer.signal(signal);
+        }
+      )
+      .subscribe();
+  };
 
-    const toggleVideo = () => {
-      if (localStream) {
-        localStream.getVideoTracks().forEach(track => {
-          track.enabled = !track.enabled;
-        });
-        setIsVideoEnabled(!isVideoEnabled);
-      }
-    };
+  const toggleMute = () => {
+    localStream?.getAudioTracks().forEach((t) => (t.enabled = !t.enabled));
+    setIsMuted((prev) => !prev);
+  };
 
-    const handleEndCall = async () => {
-      localStream?.getTracks().forEach(track => track.stop());
-      peerRef.current?.destroy();
-      await supabase
-        .from('video_sessionIds')
-        .update({ status: 'ended', ended_at: new Date().toISOString() })
-        .eq('id', sessionId);
-      onEndCall();
-    };
+  const toggleVideo = () => {
+    localStream?.getVideoTracks().forEach((t) => (t.enabled = !t.enabled));
+    setIsVideoEnabled((prev) => !prev);
+  };
 
-    return (
-      <div className="min-h-screen bg-black flex flex-col">
-        <div className="flex-1 relative">
-          {/* Remote Video */}
+  const handleEndCall = async () => {
+    peerRef.current?.destroy();
+    localStream?.getTracks().forEach((t) => t.stop());
+
+    await supabase
+      .from("video_sessions")
+      .update({ status: "ended", ended_at: new Date().toISOString() })
+      .eq("id", sessionId);
+
+    onEndCall();
+  };
+
+  return (
+    <div className="min-h-screen bg-black flex flex-col">
+      <div className="flex-1 relative">
+        <video
+          ref={remoteVideoRef}
+          autoPlay
+          playsInline
+          className="w-full h-full object-cover"
+        />
+        <div className="absolute bottom-4 right-4 w-48 h-36 bg-zinc-900 rounded-lg overflow-hidden">
           <video
-            ref={remoteVideoRef}
+            ref={localVideoRef}
             autoPlay
             playsInline
+            muted
             className="w-full h-full object-cover"
           />
-
-          {/* Local Video Preview */}
-          <div className="absolute bottom-4 right-4 w-48 h-36 bg-zinc-900 rounded-lg overflow-hidden">
-            <video
-              ref={localVideoRef}
-              autoPlay
-              playsInline
-              muted
-              className="w-full h-full object-cover"
-            />
-          </div>
-        </div>
-
-        {/* Controls */}
-        <div className="bg-zinc-900 p-4">
-          <div className="max-w-md mx-auto flex items-center justify-center gap-4">
-            <button
-              onClick={toggleMute}
-              className={`p-4 rounded-full ${isMuted ? 'bg-red-500' : 'bg-zinc-700'
-                } hover:opacity-80 transition-opacity`}
-            >
-              {isMuted ? <MicOff className="w-6 h-6" /> : <Mic className="w-6 h-6" />}
-            </button>
-
-            <button
-              onClick={handleEndCall}
-              className="p-4 bg-red-500 rounded-full hover:bg-red-600 transition-colors"
-            >
-              <PhoneOff className="w-6 h-6" />
-            </button>
-
-            <button
-              onClick={toggleVideo}
-              className={`p-4 rounded-full ${!isVideoEnabled ? 'bg-red-500' : 'bg-zinc-700'
-                } hover:opacity-80 transition-opacity`}
-            >
-              {isVideoEnabled ? (
-                <Video className="w-6 h-6" />
-              ) : (
-                <VideoOff className="w-6 h-6" />
-              )}
-            </button>
-          </div>
         </div>
       </div>
-    );
-  }
+
+      <div className="bg-zinc-900 p-4">
+        <div className="max-w-md mx-auto flex items-center justify-center gap-4">
+          <button onClick={toggleMute} className={`p-4 rounded-full ${isMuted ? "bg-red-500" : "bg-zinc-700"}`}>
+            {isMuted ? <MicOff className="w-6 h-6" /> : <Mic className="w-6 h-6" />}
+          </button>
+
+          <button onClick={handleEndCall} className="p-4 bg-red-500 rounded-full">
+            <PhoneOff className="w-6 h-6" />
+          </button>
+
+          <button onClick={toggleVideo} className={`p-4 rounded-full ${!isVideoEnabled ? "bg-red-500" : "bg-zinc-700"}`}>
+            {isVideoEnabled ? <Video className="w-6 h-6" /> : <VideoOff className="w-6 h-6" />}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}

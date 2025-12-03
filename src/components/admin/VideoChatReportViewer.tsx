@@ -36,15 +36,15 @@ const VideoChatReportViewer: React.FC<VideoChatReportViewerProps> = ({ canManage
 
   useEffect(() => {
     fetchReports();
+    
   }, [filterStatus]);
-  
-  // Update the parent component with the count of pending reports
+
   useEffect(() => {
     if (updateCount) {
       const pendingReports = reports.filter(report => report.status === 'pending').length;
       updateCount(pendingReports);
     }
-  }, [reports, updateCount]);
+  }, [reports]);
 
   const fetchReports = async () => {
     setLoading(true);
@@ -59,12 +59,10 @@ const VideoChatReportViewer: React.FC<VideoChatReportViewerProps> = ({ canManage
           reported_user:reported_user_id(email, display_name)
         `);
       
-      // Apply status filter if not 'all'
       if (filterStatus !== 'all') {
         query = query.eq('status', filterStatus);
       }
       
-      // Order by most recent first
       query = query.order('reported_at', { ascending: false });
       
       const { data, error } = await query;
@@ -98,7 +96,7 @@ const VideoChatReportViewer: React.FC<VideoChatReportViewerProps> = ({ canManage
       
       if (error) throw error;
       
-      // Refresh reports after successful update
+      
       fetchReports();
       setSelectedReport(null);
     } catch (err) {

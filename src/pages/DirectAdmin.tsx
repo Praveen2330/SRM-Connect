@@ -21,7 +21,7 @@ const DirectAdmin: React.FC = () => {
     if (!loading && user) {
       // Direct check for the specific admin user ID
       if (user.id === 'e1f9caeb-ae74-41af-984a-b44230ac7491') {
-        console.log('Direct admin access granted to:', user.email);
+        // Direct admin access granted (email hidden for security)
         setIsAllowed(true);
       } else {
         navigate('/dashboard');

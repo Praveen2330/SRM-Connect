@@ -8,7 +8,7 @@ export const useAuth = () => {
     throw new Error('useAuth must be used within an AuthProvider');
   }
   
-  console.log('Current user:', context.user);
+  // Removed user info log for privacy
   
   return context;
 };

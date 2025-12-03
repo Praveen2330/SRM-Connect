@@ -28,9 +28,17 @@ interface ExtendedChatMessage {
 }
 
 // Use environment variable for production or fallback to localhost for development
-// Force HTTPS protocol for WebSocket connections in production
-const SOCKET_URL = import.meta.env.VITE_SOCKET_SERVER_URL || 'http://localhost:3002';
+// Socket.IO will automatically handle protocol conversion (http->ws, https->wss)
+// Ensure we're using the correct protocol and port
+const SOCKET_URL = import.meta.env.VITE_SOCKET_SERVER_URL || 
+  (window.location.hostname === 'localhost' ? 'http://localhost:3002' : 
+   `${window.location.protocol}//${window.location.hostname}:3002`);
+
+// Log the socket URL and current environment
 console.log('Using Socket.IO server URL:', SOCKET_URL);
+console.log('Current environment:', import.meta.env.MODE);
+console.log('Current protocol:', window.location.protocol);
+console.log('Current hostname:', window.location.hostname);
 
 // Socket.IO connection options
 const SOCKET_OPTIONS = {
@@ -38,11 +46,12 @@ const SOCKET_OPTIONS = {
   reconnectionAttempts: Infinity,
   reconnectionDelay: 1000,
   reconnectionDelayMax: 5000,
-  timeout: 20000,
+  timeout: 30000,  // Increased timeout
   autoConnect: true,
-  transports: ['websocket', 'polling'],
+  transports: ['polling', 'websocket'],  // Try polling first, then websocket
   pingTimeout: 120000, 
   pingInterval: 30000,
+  forceNew: true,  // Force a new connection
 };
 const ICE_SERVERS = {
   iceServers: [
@@ -78,6 +87,7 @@ const VideoChat = (): JSX.Element => {
   const localStreamRef = useRef<MediaStream | null>(null);
   const remoteVideoRef = useRef<HTMLVideoElement | null>(null);
   const localVideoRef = useRef<HTMLVideoElement | null>(null);
+  const mountTimeRef = useRef<number>(Date.now()); // Track when component mounted
 
   const [socket, setSocket] = useState<SocketType | null>(null);
   const [localStream, setLocalStream] = useState<MediaStream | null>(null);
@@ -94,15 +104,19 @@ const VideoChat = (): JSX.Element => {
   const [isReportSubmitting, setIsReportSubmitting] = useState(false);
   const [intentionalDisconnect, setIntentionalDisconnect] = useState(false);
   const [reconnectionAttempts, setReconnectionAttempts] = useState(0);
-  const MAX_RECONNECTION_ATTEMPTS = 3;
+  const [connectionState, setConnectionState] = useState<'idle' | 'waiting' | 'connecting' | 'connected' | 'disconnected' | 'failed'>('idle');
 
-  // Redirect if not authenticated
-  useEffect(() => {
-    if (!loading && !user) {
-      navigate('/');
-      return;
-    }
-  }, [loading, user, navigate]);
+  const MAX_RECONNECTION_ATTEMPTS = 3;
+  
+  const initCameraRef = useRef<() => Promise<void>>();
+const remoteMediaStreamRef = useRef<MediaStream | null>(null);
+
+  // Ensure matchmaking only starts when both socket and localStream are ready
+useEffect(() => {
+  if (socket && socket.connected && localStream && user && !isMatching) {
+    handleFindMatch();
+  }
+}, [socket, localStream, user, isMatching]);
 
   const handleFindMatch = async () => {
     if (!socket || !user) return;
@@ -238,14 +252,41 @@ const VideoChat = (): JSX.Element => {
     console.log('Initializing socket connection to:', SOCKET_URL);
     console.log('Environment variables available:', import.meta.env.VITE_SOCKET_SERVER_URL ? 'Yes' : 'No');
     
-    // Ensure we're using secure WebSockets (wss://) if the server URL is https://
-    const socketUrl = SOCKET_URL.replace('https://', 'wss://').replace('http://', 'ws://');
-    console.log('Adjusted socket URL for WebSocket protocol:', socketUrl);
-    
-    const newSocket = io(socketUrl, {
+    // Debug the current URL and connection environment
+    console.log('Current URL:', window.location.href);
+    console.log('Using socket URL:', SOCKET_URL);
+  
+    // Enhanced socket options with better reconnection settings
+    const enhancedOptions = {
       ...SOCKET_OPTIONS,
-      query: { userId: user.id }
-    });
+      reconnection: true,
+      reconnectionAttempts: 15,  // Increased from 10
+      reconnectionDelay: 1000,
+      reconnectionDelayMax: 5000,
+      timeout: 30000,  // Increased from 20000
+      query: { userId: user.id },
+      transports: ['websocket', 'polling'],
+      forceNew: true,  // Force a new connection
+      autoConnect: true  // Ensure auto connection is enabled
+    };
+    
+    console.log('Socket connection options:', enhancedOptions);
+    
+    // Check if we already have a socket and it's connected
+    if (socket && socket.connected) {
+      console.log('Socket already connected, reusing existing connection');
+      setConnectionState('connected');
+      return;
+    }
+
+    // Check if we have a socket but it's not connected
+    if (socket && !socket.connected) {
+      console.log('Socket exists but not connected, attempting to reconnect');
+      socket.connect();
+      return;
+    }
+    
+    const newSocket = io(SOCKET_URL, enhancedOptions);
     
     // Reset intentional disconnect flag on new connection
     setIntentionalDisconnect(false);
@@ -255,8 +296,17 @@ const VideoChat = (): JSX.Element => {
 
     // Socket connection event handlers
     const handleConnect = () => {
-      console.log('Socket connected successfully');
+      console.log('Socket connected successfully with ID:', newSocket.id);
+      setConnectionState('connected');
       setError(null); // Clear any connection errors
+      
+      // Log detailed connection information
+      console.log('Socket connection details:', {
+        id: newSocket.id,
+        connected: newSocket.connected,
+        disconnected: newSocket.disconnected,
+        transport: newSocket.io.opts.transports
+      });
       
       // Re-join queue if we were matching before reconnection
       if (isMatching && user) {
@@ -270,49 +320,151 @@ const VideoChat = (): JSX.Element => {
     };
 
     const handleReconnect = (attemptNumber: number) => {
-      console.log(`Socket reconnecting... attempt ${attemptNumber}`);
+      console.log(`Socket reconnected after ${attemptNumber} attempts`);
+      setConnectionState('connected');
+      setError(null); // Clear any connection errors
+    };
+
+    const handleReconnectAttempt = (attemptNumber: number) => {
+      console.log(`Socket reconnection attempt ${attemptNumber}...`);
     };
 
     const handleReconnectError = (error: Error) => {
       console.error('Socket reconnection error:', error);
-      setError('Connection lost. Please refresh the page.');
+      setConnectionState('disconnected');
+      setError('Connection lost. Attempting to reconnect...');
+      
+      // Try to reconnect manually after a delay
+      setTimeout(() => {
+        console.log('Manually attempting to reconnect socket...');
+        newSocket.connect();
+      }, 3000);
     };
     
     const handleConnectError = (error: Error) => {
       console.error('Socket connection error:', error);
+      setConnectionState('disconnected');
+      
+      // Check if the error is related to CORS or network issues
+      const errorMessage = error.toString();
+      if (errorMessage.includes('CORS') || errorMessage.includes('transport')) {
+        console.log('Detected CORS or transport error, trying alternative connection method');
+        // Try with different transport options
+        newSocket.io.opts.transports = ['polling', 'websocket'];
+        setTimeout(() => newSocket.connect(), 1000);
+      }
+    };
+    
+    const handleDisconnect = (reason: string) => {
+      console.log('Socket disconnected, reason:', reason);
+      setConnectionState('disconnected');
+      
+      // If the disconnection wasn't initiated by the client, try to reconnect
+      if (reason !== 'io client disconnect' && !intentionalDisconnect) {
+        console.log('Unintentional disconnect, attempting to reconnect...');
+        setTimeout(() => {
+          if (newSocket) {
+            console.log('Attempting to reconnect socket after disconnect...');
+            newSocket.connect();
+          }
+        }, 2000);
+      }
     };
 
     // Register connection event handlers
     newSocket.on('connect', handleConnect);
     newSocket.on('reconnect', handleReconnect);
+    newSocket.on('reconnect_attempt', handleReconnectAttempt);
     newSocket.on('reconnect_error', handleReconnectError);
     newSocket.on('connect_error', handleConnectError);
+    newSocket.on('disconnect', handleDisconnect);
 
-    // Initialize camera
+    // Initialize camera with enhanced error handling and compatibility checks
     const initCamera = async () => {
+      // Store reference to initCamera for use in other effects
+      initCameraRef.current = initCamera;
       try {
-        console.log('Requesting camera access...');
-        const stream = await navigator.mediaDevices.getUserMedia({ 
+        // Check if mediaDevices API is available
+        if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+          console.error('MediaDevices API not supported in this browser');
+          setError('Your browser does not support video calls. Please try a different browser like Chrome or Firefox.');
+          return;
+        }
+        
+        console.log('Browser supports mediaDevices API, requesting camera access...');
+        console.log('Available media devices:', await navigator.mediaDevices.enumerateDevices()
+          .then(devices => devices.map(d => ({ kind: d.kind, label: d.label })))
+          .catch(err => `Error enumerating devices: ${err}`));
+        
+        // Try with more permissive constraints first
+        const constraints = { 
           video: {
             width: { ideal: 1280 },
             height: { ideal: 720 },
             frameRate: { ideal: 30 }
           }, 
           audio: true 
-        });
+        };
+        
+        console.log('Requesting media with constraints:', JSON.stringify(constraints));
+        const stream = await navigator.mediaDevices.getUserMedia(constraints)
+          .catch(async (err) => {
+            console.warn('Failed to get media with ideal constraints:', err);
+            console.log('Trying with basic constraints...');
+            // Fallback to basic constraints
+            return await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+          });
         
         console.log('Camera access granted, setting up local video');
         // Set the stream to state and refs
         setLocalStream(stream);
         localStreamRef.current = stream;
         
-        // Ensure video plays immediately
-        if (localVideoRef.current) {
-          localVideoRef.current.srcObject = stream;
-          localVideoRef.current.play()
-            .then(() => console.log('Local video playing'))
-            .catch(e => console.error('Error playing local video:', e));
-        }
+        // Ensure video plays immediately with enhanced error handling and retry mechanism
+        const setupLocalVideo = (retryCount = 0, maxRetries = 5) => {
+          if (localVideoRef.current) {
+            console.log('Setting local video srcObject with stream tracks:', stream.getTracks().map(t => ({ kind: t.kind, enabled: t.enabled, muted: t.muted })));
+            localVideoRef.current.srcObject = stream;
+            
+            // Force a reload of the video element
+            localVideoRef.current.load();
+            
+            // Add event listeners to debug video element state
+            localVideoRef.current.onloadedmetadata = () => {
+              console.log('Local video loadedmetadata event fired');
+              localVideoRef.current?.play()
+                .then(() => console.log('Local video playing successfully'))
+                .catch(e => {
+                  console.error('Error playing local video after metadata loaded:', e);
+                  // Try playing again with a timeout
+                  setTimeout(() => {
+                    localVideoRef.current?.play()
+                      .then(() => console.log('Local video playing after retry'))
+                      .catch(e => console.error('Error playing local video after retry:', e));
+                  }, 1000);
+                });
+            };
+            
+            localVideoRef.current.onerror = (e) => {
+              console.error('Local video element error:', e);
+            };
+          } else {
+            console.error(`Local video ref is not available (attempt ${retryCount + 1} of ${maxRetries})`);
+            if (retryCount < maxRetries) {
+              // Retry after a delay - the ref might not be available immediately
+              setTimeout(() => {
+                console.log(`Retrying local video setup (attempt ${retryCount + 2} of ${maxRetries})`);
+                setupLocalVideo(retryCount + 1, maxRetries);
+              }, 500); // Increase delay between retries
+            } else {
+              console.error('Max retries reached for local video setup');
+              setError('Could not initialize video. Please refresh the page or try a different browser.');
+            }
+          }
+        };
+        
+        // Start the setup process
+        setupLocalVideo();
       } catch (err) {
         console.error('Error accessing camera:', err);
         setError('Could not access camera or microphone');
@@ -328,11 +480,29 @@ const VideoChat = (): JSX.Element => {
       // Clean up event listeners
       newSocket.off('connect', handleConnect);
       newSocket.off('reconnect', handleReconnect);
+      newSocket.off('reconnect_attempt', handleReconnectAttempt);
       newSocket.off('reconnect_error', handleReconnectError);
       newSocket.off('connect_error', handleConnectError);
+      newSocket.off('disconnect', handleDisconnect);
       
-      // Close socket connection
-      newSocket.disconnect();
+      // Log socket state before disconnecting
+      console.log('Socket state before disconnection:', {
+        id: newSocket.id,
+        connected: newSocket.connected,
+        disconnected: newSocket.disconnected
+      });
+      
+      // Close socket connection with proper error handling
+      try {
+        if (newSocket.connected) {
+          console.log('Socket is connected, disconnecting properly...');
+          newSocket.disconnect();
+        } else {
+          console.log('Socket is already disconnected');
+        }
+      } catch (error) {
+        console.error('Error during socket disconnection:', error);
+      }
       
       // Clean up camera when component unmounts
       if (localStreamRef.current) {
@@ -354,20 +524,37 @@ const VideoChat = (): JSX.Element => {
         pc.addTrack(track, localStreamRef.current);
       }
     });
-
-    // Handle remote tracks
     pc.ontrack = (event: RTCTrackEvent) => {
-      console.log('Received remote track', event.streams);
-      setRemoteStream(event.streams[0]);
-      
+      console.log('Received remote track', event.streams, event.track);
+      if (!remoteMediaStreamRef.current) {
+        remoteMediaStreamRef.current = new MediaStream();
+      }
+      const remoteStream = remoteMediaStreamRef.current;
+
+      // Add new track if not already present
+      if (!remoteStream.getTracks().find(t => t.id === event.track.id)) {
+        remoteStream.addTrack(event.track);
+        console.log('[ontrack] Added track to remote stream:', event.track);
+      }
+
+      setRemoteStream(remoteStream);
+
       if (remoteVideoRef.current) {
-        remoteVideoRef.current.srcObject = event.streams[0];
-        console.log('[ontrack] Set remote video srcObject:', event.streams[0]);
-        console.log('[ontrack] Remote video tracks:', event.streams[0].getTracks());
-        
-        // Check if tracks are muted
-        event.streams[0].getTracks().forEach(track => {
-          console.log(`Track ${track.kind} muted:`, track.muted);
+        // Clean up previous srcObject if needed
+        if (remoteVideoRef.current.srcObject && remoteVideoRef.current.srcObject !== remoteStream) {
+          // Stop previous tracks
+          const prevTracks = (remoteVideoRef.current.srcObject as MediaStream)?.getTracks?.();
+          prevTracks?.forEach(track => track.stop());
+          remoteVideoRef.current.srcObject = null;
+          remoteVideoRef.current.load();
+        }
+        remoteVideoRef.current.style.display = 'block';
+        remoteVideoRef.current.srcObject = remoteStream;
+        console.log('[ontrack] Set remote video srcObject:', remoteStream);
+        if (remoteVideoRef.current.parentElement) {
+          remoteVideoRef.current.parentElement.style.display = 'flex';
+        }
+        remoteStream.getTracks().forEach(track => {
           
           // Listen for unmute event
           track.onunmute = () => {
@@ -378,6 +565,11 @@ const VideoChat = (): JSX.Element => {
                 .then(() => console.log('Remote video playing after track unmute'))
                 .catch(e => console.error('Error playing remote video after unmute:', e));
             }
+          };
+          
+          // Listen for ended event
+          track.onended = () => {
+            console.log(`Track ${track.kind} ended`);
           };
         });
         
@@ -395,7 +587,7 @@ const VideoChat = (): JSX.Element => {
         document.addEventListener('visibilitychange', handleVisibilityChange);
         
         // Try playing the video immediately
-        const playPromise = remoteVideoRef.current.play();
+        const playPromise = remoteVideoRef.current?.play();
         if (playPromise !== undefined) {
           playPromise
             .then(() => {
@@ -406,7 +598,7 @@ const VideoChat = (): JSX.Element => {
             .catch(e => {
               console.error('Error playing remote video:', e);
               // Add a click event listener to the video container to play on user interaction
-              const videoContainer = remoteVideoRef.current.parentElement;
+              const videoContainer = remoteVideoRef.current?.parentElement;
               if (videoContainer) {
                 videoContainer.addEventListener('click', () => {
                   if (remoteVideoRef.current && remoteVideoRef.current.paused) {
@@ -423,6 +615,31 @@ const VideoChat = (): JSX.Element => {
     };
 
     // ICE candidate handling
+    // Monitor connection state changes more closely
+    pc.onconnectionstatechange = () => {
+      console.log(`Connection state changed to: ${pc.connectionState}`);
+      
+      if (pc.connectionState === 'connected') {
+        console.log('WebRTC connection established successfully');
+        // Try to play remote video again when connection is established
+        if (remoteVideoRef.current && remoteVideoRef.current.paused) {
+          console.log('Attempting to play remote video after connection established');
+          setTimeout(() => {
+            if (remoteVideoRef.current) {
+              remoteVideoRef.current.play()
+                .then(() => console.log('Remote video playing after connection established'))
+                .catch(e => console.error('Error playing remote video after connection established:', e));
+            }
+          }, 1000); // Small delay to ensure everything is ready
+        }
+      } else if (pc.connectionState === 'disconnected' || pc.connectionState === 'failed') {
+        console.error(`WebRTC connection ${pc.connectionState}`);
+        if (!intentionalDisconnect) {
+          setError(`Connection ${pc.connectionState}. Please try again.`);
+        }
+      }
+    };
+    
     pc.onicecandidate = (event: RTCPeerConnectionIceEvent) => {
       if (event.candidate && socket) {
         console.log('Sending ICE candidate', event.candidate);
@@ -544,7 +761,79 @@ const VideoChat = (): JSX.Element => {
 
   // Main effect for creating and managing peer connection
   useEffect(() => {
-    if (!socket || !localStream) return;
+    if (!socket || !localStream) {
+      console.log('Skipping peer connection setup - missing dependencies:', { 
+        socketAvailable: !!socket, 
+        localStreamAvailable: !!localStream 
+      });
+      
+      // Check socket connection status
+      if (socket) {
+        console.log('Socket connection status:', {
+          connected: socket.connected,
+          id: socket.id,
+          disconnected: socket.disconnected
+        });
+        
+        // If socket exists but is not connected, try to reconnect
+        if (!socket.connected) {
+          console.log('Socket exists but not connected - attempting to reconnect');
+          socket.connect();
+          
+          // Set up a reconnection attempt with a timeout
+          const reconnectTimer = setTimeout(() => {
+            if (socket && !socket.connected) {
+              console.log('Socket still not connected after timeout - forcing reconnection');
+              // Force a new connection by recreating the socket
+              try {
+                // Try to disconnect first if it's in a weird state
+                socket.disconnect();
+                // Try with different transport options
+                socket.io.opts.transports = ['polling', 'websocket'];
+                console.log('Switching transport order and reconnecting...');
+                socket.connect();
+              } catch (error) {
+                console.error('Error during socket reconnection:', error);
+              }
+            }
+          }, 3000);
+          
+          return () => clearTimeout(reconnectTimer);
+        }
+      } else {
+        console.log('Socket is null - check socket initialization');
+      }
+      
+      // Check why local stream is not available
+      if (!localStream && localStreamRef.current) {
+        console.log('localStream state is null but localStreamRef exists - syncing state');
+        setLocalStream(localStreamRef.current);
+      } else if (!localStream) {
+        console.log('Both localStream and localStreamRef are null - check camera initialization');
+        // Attempt to reinitialize camera if it's been more than 5 seconds since component mounted
+        const timeSinceMount = Date.now() - mountTimeRef.current;
+        if (timeSinceMount > 5000) {
+          console.log('Attempting to reinitialize camera after timeout');
+          if (initCameraRef.current) {
+            initCameraRef.current();
+          } else {
+            console.error('initCamera function not available');
+          }
+        }
+      }
+      
+      return;
+    }
+    
+    console.log('Setting up peer connection with local stream tracks:', 
+      localStream.getTracks().map(t => ({ kind: t.kind, enabled: t.enabled, muted: t.muted })));
+    
+    // Log socket connection details
+    console.log('Socket connection details:', {
+      connected: socket.connected,
+      id: socket.id,
+      hasListeners: socket.hasListeners('offer')
+    });
     
     // Reset reconnection attempts when creating a new connection
     setReconnectionAttempts(0);
@@ -556,68 +845,197 @@ const VideoChat = (): JSX.Element => {
     });
 
     pc.ontrack = (event: RTCTrackEvent) => {
-      setRemoteStream(event.streams[0]);
+      console.log('Received remote track', event.streams);
       
-      if (remoteVideoRef.current) {
-        remoteVideoRef.current.srcObject = event.streams[0];
-        console.log('[ontrack] Set remote video srcObject:', event.streams[0]);
-        console.log('[ontrack] Remote video tracks:', event.streams[0].getTracks());
-        
-        // Check if tracks are muted
-        event.streams[0].getTracks().forEach(track => {
-          console.log(`Track ${track.kind} muted:`, track.muted);
+      // Check if we have valid streams
+      if (!event.streams || event.streams.length === 0) {
+        console.error('No remote streams available in ontrack event');
+        setError('No remote video stream received. Please try again.');
+        return;
+      }
+      
+      // Check if we have video tracks
+      const hasVideoTrack = event.streams[0].getTracks().some(track => track.kind === 'video');
+      if (!hasVideoTrack) {
+        console.warn('Remote stream has no video track');
+        // Continue anyway as audio-only might be intentional
+      } else {
+        console.log('Remote stream has video track - good!');
+      }
+      
+      // Log detailed information about the stream
+      const remoteStream = event.streams[0];
+      console.log('Remote stream details:', {
+        id: remoteStream.id,
+        active: remoteStream.active,
+        trackCount: remoteStream.getTracks().length
+      });
+      
+      // Set the remote stream in state
+      setRemoteStream(remoteStream);
+      
+      // Setup remote video with enhanced retry mechanism
+      const setupRemoteVideo = (retryCount = 0, maxRetries = 10) => {
+        if (remoteVideoRef.current) {
+          console.log(`Setting up remote video (attempt ${retryCount + 1})`);
           
-          // Listen for unmute event
-          track.onunmute = () => {
-            console.log(`Track ${track.kind} unmuted`);
-            // Try to play video again when tracks become unmuted
+          // Force clean up any existing srcObject
+          if (remoteVideoRef.current.srcObject) {
+            console.log('Cleaning up existing srcObject before setting new one');
+            const oldTracks = (remoteVideoRef.current.srcObject as MediaStream)?.getTracks() || [];
+            oldTracks.forEach(track => track.stop());
+            remoteVideoRef.current.srcObject = null;
+          }
+          
+          // Ensure video element is visible
+          remoteVideoRef.current.style.display = 'block';
+          
+          // Set the new srcObject
+          remoteVideoRef.current.srcObject = remoteStream;
+          console.log('[ontrack] Set remote video srcObject:', remoteStream);
+          
+          // Force the video to be visible in the DOM
+          if (remoteVideoRef.current.parentElement) {
+            remoteVideoRef.current.parentElement.style.display = 'flex';
+          }
+          
+          // Log detailed track information
+          const trackInfo = remoteStream.getTracks().map(t => ({ 
+            kind: t.kind, 
+            enabled: t.enabled, 
+            muted: t.muted,
+            readyState: t.readyState,
+            id: t.id
+          }));
+          console.log('[ontrack] Remote video tracks:', trackInfo);
+          
+          // Force a reload of the video element
+          remoteVideoRef.current.load();
+          
+          // Set a timeout to check if video is displaying properly
+          setTimeout(() => {
+            if (remoteVideoRef.current) {
+              const videoWidth = remoteVideoRef.current.videoWidth;
+              const videoHeight = remoteVideoRef.current.videoHeight;
+              console.log('Checking remote video dimensions after timeout:', { videoWidth, videoHeight });
+              
+              if (videoWidth === 0 || videoHeight === 0) {
+                console.warn('Remote video has zero dimensions after timeout - attempting to fix');
+                // Try reapplying the srcObject
+                const currentStream = remoteVideoRef.current.srcObject;
+                remoteVideoRef.current.srcObject = null;
+                setTimeout(() => {
+                  if (remoteVideoRef.current) {
+                    remoteVideoRef.current.srcObject = currentStream;
+                    remoteVideoRef.current.play()
+                      .then(() => console.log('Remote video playing after dimension fix'))
+                      .catch(e => console.error('Error playing remote video after dimension fix:', e));
+                  }
+                }, 500);
+              }
+            }
+          }, 2000);
+          
+          // Check if tracks are muted and set up listeners
+          remoteStream.getTracks().forEach(track => {
+            console.log(`Track ${track.kind} muted:`, track.muted, 'readyState:', track.readyState);
+            
+            // Listen for track ended
+            track.onended = () => {
+              console.log(`Track ${track.kind} ended`);
+            };
+            
+            // Listen for unmute event
+            track.onunmute = () => {
+              console.log(`Track ${track.kind} unmuted`);
+              // Try to play video again when tracks become unmuted
+              if (remoteVideoRef.current && remoteVideoRef.current.paused) {
+                remoteVideoRef.current.play()
+                  .then(() => console.log('Remote video playing after track unmute'))
+                  .catch(e => console.error('Error playing remote video after unmute:', e));
+              }
+            };
+          });
+          
+          // Ensure video plays with muted audio first to bypass autoplay restrictions
+          remoteVideoRef.current.muted = true;
+          
+          // Add event listeners to debug video element state
+          remoteVideoRef.current.onloadedmetadata = () => {
+            console.log('Remote video loadedmetadata event fired');
             if (remoteVideoRef.current && remoteVideoRef.current.paused) {
               remoteVideoRef.current.play()
-                .then(() => console.log('Remote video playing after track unmute'))
-                .catch(e => console.error('Error playing remote video after unmute:', e));
+                .then(() => console.log('Remote video playing after metadata loaded'))
+                .catch(e => {
+                  console.error('Error playing remote video after metadata loaded:', e);
+                  // Try playing again with a timeout
+                  setTimeout(() => {
+                    if (remoteVideoRef.current && remoteVideoRef.current.paused) {
+                      remoteVideoRef.current.play()
+                        .then(() => console.log('Remote video playing after retry'))
+                        .catch(e => console.error('Error playing remote video after retry:', e));
+                    }
+                  }, 1000);
+                });
             }
           };
-        });
-        
-        // Ensure video plays with muted audio first to bypass autoplay restrictions
-        remoteVideoRef.current.muted = true;
-        
-        // Add a visibility change listener to retry playing when tab becomes visible
-        const handleVisibilityChange = () => {
-          if (document.visibilityState === 'visible' && remoteVideoRef.current && remoteVideoRef.current.paused) {
-            remoteVideoRef.current.play()
-              .then(() => console.log('Remote video playing after visibility change'))
-              .catch(e => console.error('Error playing remote video after visibility change:', e));
+          
+          remoteVideoRef.current.onerror = (e) => {
+            console.error('Remote video element error:', e);
+          };
+          
+          // Add a visibility change listener to retry playing when tab becomes visible
+          const handleVisibilityChange = () => {
+            if (document.visibilityState === 'visible' && remoteVideoRef.current && remoteVideoRef.current.paused) {
+              remoteVideoRef.current.play()
+                .then(() => console.log('Remote video playing after visibility change'))
+                .catch(e => console.error('Error playing remote video after visibility change:', e));
+            }
+          };
+          document.addEventListener('visibilitychange', handleVisibilityChange);
+          
+          // Try playing the video immediately
+          const playPromise = remoteVideoRef.current.play();
+          if (playPromise !== undefined) {
+            playPromise
+              .then(() => {
+                console.log('Remote video playing successfully');
+                // After successful play, you can unmute if needed
+                // remoteVideoRef.current.muted = false;
+              })
+              .catch(e => {
+                console.error('Error playing remote video:', e);
+                // Add a click event listener to the video container to play on user interaction
+                const videoContainer = remoteVideoRef.current?.parentElement;
+                if (videoContainer) {
+                  videoContainer.addEventListener('click', () => {
+                    if (remoteVideoRef.current && remoteVideoRef.current.paused) {
+                      remoteVideoRef.current.play()
+                        .then(() => console.log('Remote video playing after user interaction'))
+                        .catch(err => console.error('Still cannot play remote video:', err));
+                    }
+                  });
+                  console.log('Added click handler to play video on user interaction');
+                }
+              });
           }
-        };
-        document.addEventListener('visibilitychange', handleVisibilityChange);
-        
-        // Try playing the video immediately
-        const playPromise = remoteVideoRef.current.play();
-        if (playPromise !== undefined) {
-          playPromise
-            .then(() => {
-              console.log('Remote video playing successfully');
-              // After successful play, you can unmute if needed
-              // remoteVideoRef.current.muted = false;
-            })
-            .catch(e => {
-              console.error('Error playing remote video:', e);
-              // Add a click event listener to the video container to play on user interaction
-              const videoContainer = remoteVideoRef.current.parentElement;
-              if (videoContainer) {
-                videoContainer.addEventListener('click', () => {
-                  if (remoteVideoRef.current && remoteVideoRef.current.paused) {
-                    remoteVideoRef.current.play()
-                      .then(() => console.log('Remote video playing after user interaction'))
-                      .catch(err => console.error('Still cannot play remote video:', err));
-                  }
-                });
-                console.log('Added click handler to play video on user interaction');
-              }
-            });
+        } else {
+          console.error(`Remote video ref is not available (attempt ${retryCount + 1} of ${maxRetries})`);
+          if (retryCount < maxRetries) {
+            // Retry after a delay - the ref might not be available immediately
+            setTimeout(() => {
+              console.log(`Retrying remote video setup (attempt ${retryCount + 2} of ${maxRetries})`);
+              setupRemoteVideo(retryCount + 1, maxRetries);
+            }, 500); // Increase delay between retries
+          } else {
+            console.error('Max retries reached for remote video setup');
+            setError('Could not initialize remote video. Please refresh the page or try a different browser.');
+          }
         }
-      }
+      };
+      
+      // Start the remote video setup process
+      setupRemoteVideo();
     };
 
     pc.onicecandidate = (event: RTCPeerConnectionIceEvent) => {
@@ -814,7 +1232,7 @@ const VideoChat = (): JSX.Element => {
     };
     
     // Register socket event listeners
-    socket.on('match-found', handleMatchFound);
+    socket.on('match-found', handleMatchFound); 
     socket.on('offer', handleOffer);
     socket.on('answer', handleAnswer);
     socket.on('ice-candidate', handleIceCandidate);
@@ -824,7 +1242,7 @@ const VideoChat = (): JSX.Element => {
 
     return () => {
       // Clean up event listeners
-      socket.off('match_found', handleMatchFound);
+      socket.off('match-found', handleMatchFound); 
       socket.off('offer', handleOffer);
       socket.off('answer', handleAnswer);
       socket.off('ice-candidate', handleIceCandidate);
@@ -926,7 +1344,7 @@ const VideoChat = (): JSX.Element => {
       <div className="flex flex-col items-center w-full max-w-5xl p-4">
         {/* Video section - at the top */}
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6 w-full">
-          <div className="aspect-video bg-black rounded-lg overflow-hidden flex items-center justify-center relative shadow-lg border border-gray-800">
+          <div className="aspect-video bg-black rounded-lg overflow-hidden flex items-center justify-center relative shadow-lg border border-gray-800 video-container">
             {localStream ? (
               <>
                 <video
@@ -934,11 +1352,32 @@ const VideoChat = (): JSX.Element => {
                   autoPlay
                   muted
                   playsInline
+                  controls={false}
                   className="w-full h-full object-cover"
+                  onCanPlay={() => console.log('Local video can play event fired')}
+                  onPlaying={() => console.log('Local video playing event fired')}
+                  style={{ backgroundColor: '#111' }}
                 />
                 <div className="absolute bottom-3 left-3 bg-black bg-opacity-50 px-2 py-1 rounded-md text-sm">
                   You
                 </div>
+                <button 
+                  onClick={() => {
+                    if (localVideoRef.current) {
+                      console.log('Manual play button clicked');
+                      localVideoRef.current.play()
+                        .then(() => console.log('Local video playing after manual click'))
+                        .catch(e => console.error('Error playing local video after manual click:', e));
+                    }
+                  }}
+                  className="absolute top-3 right-3 bg-blue-600 hover:bg-blue-700 text-white p-2 rounded-full"
+                  title="Restart video"
+                >
+                  <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z" />
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                  </svg>
+                </button>
               </>
             ) : (
               <div className="flex flex-col items-center justify-center">
@@ -949,18 +1388,112 @@ const VideoChat = (): JSX.Element => {
               </div>
             )}
           </div>
-          <div className="aspect-video bg-black rounded-lg overflow-hidden flex items-center justify-center relative shadow-lg border border-gray-800">
+          <div 
+            className="aspect-video bg-black rounded-lg overflow-hidden flex items-center justify-center relative shadow-lg border border-gray-800 video-container"
+            style={{ display: 'flex' }} // Always display the container
+          >
             {remoteStream ? (
               <>
                 <video
                   ref={remoteVideoRef}
                   autoPlay
                   playsInline
+                  muted
+                  controls={false}
                   className="w-full h-full object-cover"
+                  onCanPlay={() => {
+                    console.log('Remote video can play event fired');
+                    // Try to play the video when it's ready
+                    if (remoteVideoRef.current && remoteVideoRef.current.paused) {
+                      remoteVideoRef.current.play()
+                        .then(() => console.log('Remote video playing after canplay event'))
+                        .catch(e => console.error('Error playing remote video after canplay:', e));
+                    }
+                  }}
+                  onPlaying={() => {
+                    console.log('Remote video playing event fired');
+                    // Force visibility of the video element
+                    if (remoteVideoRef.current) {
+                      remoteVideoRef.current.style.display = 'block';
+    
+                      const videoWidth = remoteVideoRef.current.videoWidth;
+                      const videoHeight = remoteVideoRef.current.videoHeight;
+                      console.log('Remote video dimensions:', {
+                        videoWidth,
+                        videoHeight,
+                        clientWidth: remoteVideoRef.current.clientWidth,
+                        clientHeight: remoteVideoRef.current.clientHeight
+                      });
+                      
+                      // Check if video has zero dimensions and try to fix
+                      if (videoWidth === 0 || videoHeight === 0) {
+                        console.warn('Remote video has zero dimensions - attempting to fix');
+                        // Try reapplying the srcObject
+                        const currentStream = remoteVideoRef.current.srcObject;
+                        setTimeout(() => {
+                          if (remoteVideoRef.current) {
+                            remoteVideoRef.current.srcObject = null;
+                            remoteVideoRef.current.load();
+                            setTimeout(() => {
+                              if (remoteVideoRef.current) {
+                                remoteVideoRef.current.srcObject = currentStream;
+                                remoteVideoRef.current.play()
+                                  .then(() => console.log('Remote video playing after dimension fix'))
+                                  .catch(e => console.error('Error playing remote video after dimension fix:', e));
+                              }
+                            }, 500);
+                          }
+                        }, 500);
+                      }
+                    }
+                  }}
+                  onLoadedMetadata={() => {
+                    console.log('Remote video loadedmetadata event fired in JSX');
+                    // Force a play attempt after metadata is loaded
+                    if (remoteVideoRef.current && remoteVideoRef.current.paused) {
+                      // Add a small delay to ensure metadata is fully processed
+                      setTimeout(() => {
+                        if (remoteVideoRef.current && remoteVideoRef.current.paused) {
+                          remoteVideoRef.current.play()
+                            .then(() => console.log('Remote video playing after metadata loaded in JSX'))
+                            .catch(e => {
+                              console.error('Error playing remote video after metadata loaded in JSX:', e);
+                              // Try again with user interaction simulation
+                              setTimeout(() => {
+                                if (remoteVideoRef.current && remoteVideoRef.current.paused) {
+                                  remoteVideoRef.current.play()
+                                    .then(() => console.log('Remote video playing after second attempt'))
+                                    .catch(e => console.error('Error playing remote video after second attempt:', e));
+                                }
+                              }, 1000);
+                            });
+                        }
+                      }, 100);
+                    }
+                  }}
+                  onError={(e) => console.error('Remote video error event in JSX:', e)}
+                  style={{ backgroundColor: '#111', display: 'block', width: '100%', height: '100%' }}
                 />
                 <div className="absolute bottom-3 left-3 bg-black bg-opacity-50 px-2 py-1 rounded-md text-sm">
                   {partnerProfile ? (partnerProfile.display_name || partnerProfile.name) : 'Partner'}
                 </div>
+                <button 
+                  onClick={() => {
+                    if (remoteVideoRef.current) {
+                      console.log('Manual play button clicked for remote video');
+                      remoteVideoRef.current.play()
+                        .then(() => console.log('Remote video playing after manual click'))
+                        .catch(e => console.error('Error playing remote video after manual click:', e));
+                    }
+                  }}
+                  className="absolute top-3 right-3 bg-blue-600 hover:bg-blue-700 text-white p-2 rounded-full"
+                  title="Restart video"
+                >
+                  <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z" />
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                  </svg>
+                </button>
               </>
             ) : (
               <div className="flex flex-col items-center justify-center">

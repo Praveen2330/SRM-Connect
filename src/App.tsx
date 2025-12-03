@@ -69,7 +69,7 @@ const RequireAdmin = ({ children }: { children: JSX.Element }) => {
         
         if (!status.isAdmin) {
           // If not admin, check if we should show an error message
-          if (status.lastChecked && new Date().getTime() - status.lastChecked.getTime() < 5000) {
+          if (status.lastChecked && new Date().getTime() - new Date(status.lastChecked).getTime() < 5000) {
             // Recently checked and failed, likely a database issue
             setError('Unable to verify admin status. This may be due to database access issues.');
           }
@@ -83,7 +83,9 @@ const RequireAdmin = ({ children }: { children: JSX.Element }) => {
     };
     
     verifyAdminAccess();
-  }, [user, checkAdminStatus]);
+    // Only run when user changes, not on every render or when checkAdminStatus reference changes
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user]);
   
   if (loading || isChecking) {
     return (

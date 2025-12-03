@@ -47,12 +47,10 @@ export default function InstantChat() {
   const timerRef = useRef<any>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
-  // Scroll to bottom of messages
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
-  // Fetch current user on mount
   useEffect(() => {
     const fetchCurrentUser = async () => {
       const { data: { session } } = await supabase.auth.getSession();
@@ -65,8 +63,6 @@ export default function InstantChat() {
     };
 
     fetchCurrentUser();
-
-    // Clean up on unmount
     return () => {
       if (socketRef.current) {
         socketRef.current.disconnect();
@@ -76,8 +72,6 @@ export default function InstantChat() {
       }
     };
   }, [navigate]);
-
-  // Fetch user profile
   const fetchUserProfile = async (userId: string) => {
     try {
       const { data, error } = await supabase
@@ -98,47 +92,35 @@ export default function InstantChat() {
       console.error('Error fetching profile:', error);
     }
   };
-
-  // Set up Socket.IO connection when user is available
   useEffect(() => {
     const setupSocket = async () => {
       if (!currentUser) return;
 
       try {
-        // Clean up any existing connection
         if (socketRef.current) {
           socketRef.current.disconnect();
         }
-
-        // Initialize new socket connection to Socket.IO server
         const socketUrl = import.meta.env.VITE_SOCKET_SERVER_URL;
         if (!socketUrl) {
           throw new Error('Socket.IO server URL not configured');
         }
         console.log('Connecting to Socket.IO server at:', socketUrl);
-        
-        // Create Socket.IO client with improved configuration
         socketRef.current = socketIO(socketUrl, {
           query: { userId: currentUser.id },
-          transports: ['websocket', 'polling'], // Prefer WebSocket, fallback to polling
+          transports: ['websocket', 'polling'],
           reconnectionAttempts: 5,
           reconnectionDelay: 1000,
           timeout: 20000,
           autoConnect: true,
           forceNew: true
         });
-
-        // Connection status handlers
         socketRef.current.on('connect', () => {
           console.log('Connected to instant chat server');
           toast.success('Connected to chat server');
-          setError(null); // Clear any previous connection errors
+          setError(null);
           
-          // Request active users count
           socketRef.current.emit('get_active_users');
         });
-        
-        // Listen for active users count updates
         socketRef.current.on('active_users_count', (count: number) => {
           console.log('Active users count:', count);
           setActiveUsers(count);
@@ -148,8 +130,6 @@ export default function InstantChat() {
           console.error('Socket connection error:', error);
           setError('Failed to connect to chat server. Please try again later.');
         });
-
-        // Handle match found
         socketRef.current.on('match-found', (data: any) => {
           setIsSearching(false);
           setPartner({
@@ -158,8 +138,6 @@ export default function InstantChat() {
             avatar_url: data.partnerProfile?.avatar_url
           });
           chatSessionIdRef.current = data.sessionId;
-          
-          // Set up timer if provided
           if (data.timerSeconds) {
             const endTime = Date.now() + (data.timerSeconds * 1000);
             
@@ -178,8 +156,6 @@ export default function InstantChat() {
               }
             }, 1000);
           }
-          
-          // Add system message
           setMessages([{
             id: 'system-connected',
             content: `You are now chatting with ${data.partnerProfile?.display_name || 'a new user'}`,
@@ -187,14 +163,10 @@ export default function InstantChat() {
             timestamp: Date.now()
           }]);
         });
-
-        // Handle no match found
         socketRef.current.on('no-match-found', () => {
           setIsSearching(false);
           toast.error('No chat partners available. Please try again later.');
         });
-
-        // Handle incoming messages
         socketRef.current.on('chat-message', (message: any) => {
           setMessages(prev => [...prev, {
             id: message.id,
@@ -204,8 +176,6 @@ export default function InstantChat() {
             senderName: message.senderName
           }]);
         });
-
-        // Handle chat ended
         socketRef.current.on('chat-ended', (data: any) => {
           toast(data.reason || 'Chat ended');
           setPartner(null);
@@ -215,7 +185,6 @@ export default function InstantChat() {
             setRemainingTime(null);
           }
           
-          // Add system message
           setMessages(prev => [...prev, {
             id: 'system-ended',
             content: 'Chat ended',
@@ -223,8 +192,6 @@ export default function InstantChat() {
             timestamp: Date.now()
           }]);
         });
-
-        // Handle partner disconnected
         socketRef.current.on('partner-disconnected', () => {
           toast('Your chat partner disconnected');
           setPartner(null);
@@ -234,7 +201,6 @@ export default function InstantChat() {
             setRemainingTime(null);
           }
           
-          // Add system message
           setMessages(prev => [...prev, {
             id: 'system-disconnected',
             content: 'Your chat partner disconnected',
@@ -242,8 +208,6 @@ export default function InstantChat() {
             timestamp: Date.now()
           }]);
         });
-
-        // Handle report response
         socketRef.current.on('report-received', (data: any) => {
           if (data.success) {
             toast.success('Report submitted successfully');
@@ -251,8 +215,6 @@ export default function InstantChat() {
             toast.error(`Failed to submit report: ${data.error || 'Unknown error'}`);
           }
         });
-
-        // Handle connection request
         socketRef.current.on('connection-request', () => {
           setShowConnectionRequest(true);
         });
@@ -274,8 +236,6 @@ export default function InstantChat() {
 
     setupSocket();
   }, [currentUser]);
-
-  // Find a chat partner
   const findChatPartner = () => {
     if (!socketRef.current) {
       toast.error('Not connected to chat server');
@@ -287,8 +247,6 @@ export default function InstantChat() {
     setMessages([]);
     setConnectionRequested(false);
     setConnectionAccepted(false);
-    
-    // Join the instant chat queue
     socketRef.current.emit('join_instant_chat_queue', {
       userId: currentUser.id,
       displayName: anonymousMode ? 'Anonymous User' : (userProfile?.display_name || currentUser.email),
@@ -297,8 +255,6 @@ export default function InstantChat() {
     
     toast('Looking for a chat partner...');
   };
-
-  // Send a message
   const sendMessage = () => {
     if (!newMessage.trim() || !socketRef.current || !partner) return;
     
@@ -310,23 +266,15 @@ export default function InstantChat() {
       timestamp: Date.now(),
       senderName: anonymousMode ? 'Anonymous' : (userProfile?.display_name || 'You')
     };
-    
-    // Add to local messages
     setMessages(prev => [...prev, messageObj]);
-    
-    // Send to server
     socketRef.current.emit('chat-message', {
       message: newMessage,
       to: partner.id,
       from: currentUser.id,
       senderName: anonymousMode ? 'Anonymous' : (userProfile?.display_name || 'User')
     });
-    
-    // Clear input
     setNewMessage('');
   };
-
-  // End current chat
   const endChat = () => {
     if (!socketRef.current || !partner) return;
     
@@ -340,40 +288,29 @@ export default function InstantChat() {
       clearInterval(timerRef.current);
       setRemainingTime(null);
     }
-    
-    // Don't clear messages immediately in case user wants to report
     setTimeout(() => {
       if (!showReportModal) {
         setMessages([]);
       }
     }, 500);
   };
-
-  // Skip current partner and find a new one
   const skipAndFindNew = () => {
     endChat();
     findChatPartner();
   };
-
-  // Report the current chat partner using Socket.IO instead of database
   const reportPartner = async () => {
     if (!socketRef.current || !partner) {
       toast.error('Cannot report: No active chat');
       return;
     }
-
-    // Show a loading toast while processing
     const loadingToast = toast.loading('Submitting report...');
 
     try {
-      // Create a simplified transcript for the report
       const simpleTranscript = messages.map(msg => (
         `${msg.senderName || 'User'}: ${msg.content}`
       ));
       
       console.log('Sending report via Socket.IO...');
-      
-      // Send the report directly via Socket.IO
       socketRef.current.emit('report-user', {
         reporterId: currentUser.id,
         reportedId: partner.id,
@@ -383,15 +320,10 @@ export default function InstantChat() {
         transcript: simpleTranscript,
         timestamp: new Date().toISOString()
       });
-      
-      // Set up a listener for the report response
       const reportPromise = new Promise((resolve, reject) => {
-        // Set a timeout to prevent waiting indefinitely
         const timeout = setTimeout(() => {
           reject(new Error('Report submission timed out'));
         }, 5000);
-        
-        // Listen for the report response
         socketRef.current?.once('report-received', (response: any) => {
           clearTimeout(timeout);
           if (response.success) {
@@ -401,26 +333,19 @@ export default function InstantChat() {
           }
         });
       });
-      
-      // Wait for the report response
       await reportPromise;
-      
-      // Dismiss the loading toast and show success message
       toast.dismiss(loadingToast);
       toast.success('Report submitted successfully');
       setShowReportModal(false);
       setReportReason('');
       setReportDescription('');
-      skipAndFindNew(); // Skip to a new chat after reporting
+      skipAndFindNew();
     } catch (error: any) {
-      // Dismiss the loading toast and show error message
       toast.dismiss(loadingToast);
       console.error('Error submitting report:', error);
       toast.error('Failed to submit report: ' + (error.message || 'Unknown error'));
     }
   };
-
-  // Request connection with current partner
   const requestConnection = () => {
     if (!socketRef.current || !partner) return;
     
@@ -431,13 +356,10 @@ export default function InstantChat() {
     setConnectionRequested(true);
     toast('Connection request sent');
   };
-
-  // Accept connection request
   const acceptConnection = async () => {
     if (!socketRef.current || !partner) return;
     
     try {
-      // Create connection in database
       try {
         await supabase
           .from('chat_connections')
@@ -447,10 +369,7 @@ export default function InstantChat() {
           }]);
       } catch (error) {
         console.error('Error saving connection to database:', error);
-        // Continue even if database save fails
       }
-      
-      // Notify partner via socket
       socketRef.current.emit('connection-accepted', {
         to: partner.id
       });
@@ -463,8 +382,6 @@ export default function InstantChat() {
       toast.error('Failed to accept connection');
     }
   };
-
-  // Reject connection request
   const rejectConnection = () => {
     if (!socketRef.current || !partner) return;
     
@@ -476,7 +393,7 @@ export default function InstantChat() {
     toast('Connection request rejected');
   };
 
-  // Format time for display
+
   const formatTime = (seconds: number) => {
     const mins = Math.floor(seconds / 60);
     const secs = seconds % 60;
@@ -485,7 +402,7 @@ export default function InstantChat() {
 
   return (
     <div className="min-h-screen bg-black text-white flex flex-col">
-      {/* Header */}
+
       <header className="bg-zinc-900 p-4 flex items-center justify-between">
         <div className="flex items-center">
           <h1 className="text-xl font-bold mr-4">Instant Chat</h1>
@@ -513,9 +430,8 @@ export default function InstantChat() {
         </div>
       </header>
       
-      {/* Main content */}
       <div className="flex-grow flex flex-col p-4 max-w-6xl mx-auto w-full">
-        {/* Status bar */}
+
         <div className="bg-zinc-900 p-3 rounded-lg mb-4 flex items-center justify-between">
           <div className="flex items-center">
             <div className="mr-3">
@@ -556,16 +472,14 @@ export default function InstantChat() {
           </div>
         </div>
         
-        {/* Error message */}
         {error && (
           <div className="bg-red-900/50 border border-red-700 p-3 rounded-lg mb-4">
             <p className="text-red-300">{error}</p>
           </div>
         )}
         
-        {/* Chat area */}
         <div className="flex-grow bg-zinc-900 rounded-lg mb-4 overflow-hidden flex flex-col">
-          {/* Messages */}
+
           <div className="flex-grow p-4 overflow-y-auto">
             {messages.length === 0 && !isSearching && (
               <div className="h-full flex flex-col items-center justify-center text-center p-6">
@@ -622,7 +536,6 @@ export default function InstantChat() {
             )}
           </div>
           
-          {/* Input area */}
           {partner && (
             <div className="p-3 border-t border-zinc-800">
               <div className="flex">
@@ -645,7 +558,6 @@ export default function InstantChat() {
             </div>
           )}
           
-          {/* Action buttons */}
           {partner && (
             <div className="p-3 border-t border-zinc-800 flex justify-between">
               <div>
@@ -666,6 +578,8 @@ export default function InstantChat() {
                   <RefreshCw size={18} className="mr-2" />
                   Skip
                 </button>
+
+
                 
                 <button
                   onClick={requestConnection}
@@ -687,7 +601,6 @@ export default function InstantChat() {
             </div>
           )}
           
-          {/* Find chat button when not connected */}
           {!partner && !isSearching && (
             <div className="p-3 border-t border-zinc-800">
               <button
@@ -699,7 +612,6 @@ export default function InstantChat() {
             </div>
           )}
           
-          {/* Cancel search button when searching */}
           {isSearching && !partner && (
             <div className="p-3 border-t border-zinc-800">
               <button
@@ -713,7 +625,6 @@ export default function InstantChat() {
         </div>
       </div>
       
-      {/* Report modal */}
       {showReportModal && (
         <div className="fixed inset-0 bg-black bg-opacity-75 flex items-center justify-center z-50 p-4">
           <div className="bg-zinc-900 rounded-xl p-6 max-w-md w-full">
@@ -765,8 +676,6 @@ export default function InstantChat() {
           </div>
         </div>
       )}
-
-      {/* Connection request modal */}
       {showConnectionRequest && (
         <div className="fixed inset-0 bg-black bg-opacity-75 flex items-center justify-center z-50 p-4">
           <div className="bg-zinc-900 rounded-xl p-6 max-w-md w-full">

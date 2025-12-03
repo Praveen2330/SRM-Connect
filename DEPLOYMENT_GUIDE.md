@@ -100,7 +100,11 @@ After deploying both backend services, update your frontend environment variable
 
 2. **CORS Issues**: Ensure that your frontend URL is correctly set in the `FRONTEND_URL` environment variable on both backend services.
 
-3. **Socket.IO Connection Errors**: Check that your frontend is using the correct socket.io server URL.
+3. **Socket.IO Connection Errors**: 
+   - Check that your frontend is using the correct socket.io server URL by ensuring `VITE_SOCKET_URL` is set in your Vercel environment variables to your Render Socket.IO server URL (e.g., `https://srm-connect-socket.onrender.com`).
+   - Verify that the Socket.IO server is running on Render by visiting the URL directly in your browser.
+   - Check browser console for specific WebSocket connection errors.
+   - Note that Vercel does not natively support WebSocket connections in serverless functions, but our architecture uses a separate Socket.IO server on Render which should work correctly.
 
 4. **Application Errors**: Check the Render logs for details on any server-side errors.
 

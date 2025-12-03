@@ -7,6 +7,72 @@ interface UserManagementProps {
 }
 
 const UserManagement: React.FC<UserManagementProps> = ({ canManage }) => {
+  // ...existing state
+  const [showAddUserModal, setShowAddUserModal] = useState(false);
+  const [newUserName, setNewUserName] = useState('');
+  const [newUserEmail, setNewUserEmail] = useState('');
+  const [newUserPassword, setNewUserPassword] = useState('');
+  const [newUserGender, setNewUserGender] = useState('male');
+  const [addUserLoading, setAddUserLoading] = useState(false);
+  const [addUserError, setAddUserError] = useState<string | null>(null);
+  const [addUserSuccess, setAddUserSuccess] = useState<string | null>(null);
+
+  // ...existing code
+
+  // Handler for admin manual user creation
+  const handleAddUserSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setAddUserLoading(true);
+    setAddUserError(null);
+    setAddUserSuccess(null);
+    try {
+      // Create user in Supabase Auth
+      const { data: signUpData, error: signUpError } = await supabase.auth.admin.createUser({
+        email: newUserEmail,
+        password: newUserPassword,
+        email_confirm: true,
+        user_metadata: { name: newUserName, gender: newUserGender }
+      });
+      if (signUpError || !signUpData || !signUpData.user) throw signUpError || new Error('Failed to create user');
+      const userId = signUpData.user.id;
+      // Create profile row
+      const { error: profileError } = await supabase.from('profiles').insert([
+        {
+          id: userId,
+          display_name: newUserName,
+          gender: newUserGender,
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+          is_new_user: true,
+          has_accepted_rules: false,
+          is_online: false,
+          last_seen: null,
+          bio: '',
+          interests: [],
+          avatar_url: null,
+          language: 'en',
+          age: 18,
+          gender_preference: 'any'
+        }
+      ]);
+      if (profileError) throw profileError;
+      setAddUserSuccess('User created successfully!');
+      setTimeout(() => {
+        setShowAddUserModal(false);
+        setNewUserName('');
+        setNewUserEmail('');
+        setNewUserPassword('');
+        setNewUserGender('male');
+        setAddUserSuccess(null);
+        fetchUsers();
+      }, 1500);
+    } catch (error: any) {
+      setAddUserError(error?.message || 'Failed to create user');
+    } finally {
+      setAddUserLoading(false);
+    }
+  };
+
   const [users, setUsers] = useState<ExtendedUserProfile[]>([]);
   const [filteredUsers, setFilteredUsers] = useState<ExtendedUserProfile[]>([]);
   const [isLoading, setIsLoading] = useState(true);
@@ -78,10 +144,7 @@ const UserManagement: React.FC<UserManagementProps> = ({ canManage }) => {
         // Then get paginated data with join
         const { data, error } = await supabase
           .from('profiles')
-          .select(`
-            *,
-            users:id(email, created_at, last_sign_in_at, user_metadata)
-          `)
+          .select('*')
           .order(sortBy, { ascending: sortDirection === 'asc' })
           .range((page - 1) * usersPerPage, page * usersPerPage - 1);
         
@@ -239,7 +302,7 @@ const UserManagement: React.FC<UserManagementProps> = ({ canManage }) => {
         // Soft delete by updating status and anonymizing data
         updates = { 
           status: 'deleted',
-          name: 'Deleted User',
+          display_name: 'Deleted User', // Fix: use display_name instead of name
           avatar_url: null,
           email: `deleted_${userId}@removed.com`
         };
@@ -315,8 +378,64 @@ const UserManagement: React.FC<UserManagementProps> = ({ canManage }) => {
             </svg>
             Export Users
           </button>
+          {canManage && (
+            <button
+              onClick={() => setShowAddUserModal(true)}
+              className="flex items-center bg-indigo-900 text-white px-4 py-2 rounded hover:bg-indigo-800 transition-colors"
+            >
+              <svg className="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+              </svg>
+              Add Person
+            </button>
+          )}
         </div>
       </div>
+
+      {/* Add User Modal */}
+      {showAddUserModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-60">
+          <div className="bg-zinc-900 rounded-lg p-8 w-full max-w-md relative">
+            <button
+              className="absolute top-2 right-2 text-gray-400 hover:text-white"
+              onClick={() => setShowAddUserModal(false)}
+            >
+              <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+              </svg>
+            </button>
+            <h3 className="text-xl font-semibold mb-4">Add New Person</h3>
+            <form onSubmit={handleAddUserSubmit} className="space-y-4">
+              <div>
+                <label className="block text-gray-400 mb-1">Name</label>
+                <input type="text" className="w-full p-2 rounded bg-gray-800 border border-gray-700 text-white" value={newUserName} onChange={e => setNewUserName(e.target.value)} required />
+              </div>
+              <div>
+                <label className="block text-gray-400 mb-1">Email</label>
+                <input type="email" className="w-full p-2 rounded bg-gray-800 border border-gray-700 text-white" value={newUserEmail} onChange={e => setNewUserEmail(e.target.value)} required />
+              </div>
+              <div>
+                <label className="block text-gray-400 mb-1">Password</label>
+                <input type="password" className="w-full p-2 rounded bg-gray-800 border border-gray-700 text-white" value={newUserPassword} onChange={e => setNewUserPassword(e.target.value)} required minLength={6} />
+              </div>
+              <div>
+                <label className="block text-gray-400 mb-1">Gender</label>
+                <select className="w-full p-2 rounded bg-gray-800 border border-gray-700 text-white" value={newUserGender} onChange={e => setNewUserGender(e.target.value)} required>
+                  <option value="male">Male</option>
+                  <option value="female">Female</option>
+                  <option value="other">Other</option>
+                </select>
+              </div>
+              <button type="submit" disabled={addUserLoading} className="w-full bg-indigo-700 hover:bg-indigo-600 text-white py-2 rounded font-semibold transition-colors mt-4">
+                {addUserLoading ? 'Creating...' : 'Create User'}
+              </button>
+              {addUserError && <div className="text-red-400 text-sm mt-2">{addUserError}</div>}
+              {addUserSuccess && <div className="text-green-400 text-sm mt-2">{addUserSuccess}</div>}
+            </form>
+          </div>
+        </div>
+      )}
+
       
       {error && (
         <div className="bg-red-900 text-white p-4 mb-4 rounded">

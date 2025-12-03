@@ -9,3 +9,17 @@ body {
 .gradient-text {
   @apply bg-clip-text text-transparent bg-gradient-to-r from-purple-400 to-pink-600;
 }
+
+/* Ensure video elements display properly */
+video {
+  display: block !important;
+  width: 100% !important;
+  height: 100% !important;
+  object-fit: cover !important;
+}
+
+/* Force visibility for video containers */
+.video-container {
+  display: flex !important;
+  overflow: hidden !important;
+}

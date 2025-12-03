@@ -9,12 +9,14 @@
     "preview": "vite preview",
     "lint": "eslint .",
     "vercel-build": "npm run build",
-    "server": "node src/server/index.js"
+    "server": "node src/server/index.js",
+    "start": "concurrently \"npm run server\" \"npm run dev\""
   },
   "dependencies": {
     "@headlessui/react": "^1.7.18",
     "@supabase/supabase-js": "^2.49.4",
     "@types/lodash": "^4.17.16",
+    "concurrently": "^9.2.0",
     "cors": "^2.8.5",
     "date-fns": "^3.3.1",
     "dotenv": "^16.4.7",
