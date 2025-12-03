@@ -66,7 +66,7 @@ const allowedOrigins = [
   'https://srm-connect.vercel.app',
   'https://srm-connect-git-main-praveen2330.vercel.app',
   'https://srm-connect-praveen2330.vercel.app',
-  'https://srm-connect-nine.vercel.app'
+  'https://srmconnect2025.vercel.app/'
 ];
 
 console.log('Allowed origins for CORS:', allowedOrigins);

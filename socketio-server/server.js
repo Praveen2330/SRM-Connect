@@ -39,7 +39,7 @@ const io = new Server(server, {
       ? process.env.ALLOWED_ORIGINS
         ? process.env.ALLOWED_ORIGINS.split(',')
         : [
-            "https://srm-connect-nine.vercel.app",
+            "https://srmconnect2025.vercel.app/",
             "http://localhost:3000",
             "https://srm-connect.vercel.app"
           ]
