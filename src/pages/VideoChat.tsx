@@ -529,164 +529,142 @@ const remoteMediaStreamRef = useRef<MediaStream | null>(null);
     };
   }, [user, loading, navigate, cleanupCall]);
   
-  // Define setupPeerConnection function
-  const setupPeerConnection = useCallback(() => {
-    if (!localStreamRef.current) return null;
-
-    // Reuse existing peer connection if it's still valid
-    if (
-      peerConnectionRef.current &&
-      peerConnectionRef.current.signalingState !== 'closed' &&
-      peerConnectionRef.current.connectionState !== 'failed'
-    ) {
-      console.log('Reusing existing peer connection with state:', peerConnectionRef.current.connectionState);
-      return peerConnectionRef.current;
-    }
-
-    console.log('Setting up new peer connection');
-    const pc = new RTCPeerConnection(ICE_SERVERS);
-    
-    // Add local tracks to the connection
-    localStreamRef.current.getTracks().forEach((track: MediaStreamTrack) => {
-      if (localStreamRef.current) {
-        pc.addTrack(track, localStreamRef.current);
+    // Define setupPeerConnection function
+    const setupPeerConnection = useCallback(() => {
+      if (!localStreamRef.current) return null;
+  
+      // Always create a brand new peer connection to avoid reused-state bugs
+      if (peerConnectionRef.current) {
+        try {
+          console.log('Disposing existing peer connection before creating a new one');
+          const oldPc = peerConnectionRef.current;
+          oldPc.ontrack = null;
+          oldPc.onicecandidate = null;
+          oldPc.oniceconnectionstatechange = null;
+          oldPc.onconnectionstatechange = null;
+          oldPc.close();
+        } catch (err) {
+          console.error('Error closing existing peer connection:', err);
+        }
       }
-    });
-    pc.ontrack = (event: RTCTrackEvent) => {
-      console.log('[ontrack] Received remote track', event.track);
-      const [remoteStream] = event.streams;
-
-      // Store the latest remote stream in state and ref
-      if (remoteStream) {
-        setRemoteStream(remoteStream);
-        remoteMediaStreamRef.current = remoteStream;
-      }
-
-      if (!remoteVideoRef.current) {
-        console.warn('[ontrack] remoteVideoRef is null, buffering remote stream until video element mounts');
-        return;
-      }
-
-      const videoEl = remoteVideoRef.current as HTMLVideoElement;
-
-      // Only set srcObject if it's different
-      if (videoEl.srcObject !== remoteStream) {
-        console.log('[ontrack] Setting remote video srcObject');
-        videoEl.srcObject = remoteStream;
-      }
-
-      const attemptPlay = () => {
-        videoEl
-          .play()
-          .then(() => console.log('[ontrack] Remote video playing'))
-          .catch((err) => {
-            if (err.name === 'AbortError') {
-              console.warn('[ontrack] play() aborted, ignoring');
-              return;
-            }
-            console.warn('[ontrack] play blocked, waiting for user interaction');
-            const resume = () => {
-              videoEl.play().catch(() => {});
-              document.removeEventListener('click', resume);
-            };
-            document.addEventListener('click', resume, { once: true });
-          });
-      };
-
-      if (videoEl.readyState >= HTMLMediaElement.HAVE_ENOUGH_DATA) {
-        attemptPlay();
-      } else {
-        videoEl.onloadeddata = () => {
-          videoEl.onloadeddata = null;
-          attemptPlay();
+  
+      console.log('Setting up new peer connection');
+      const pc = new RTCPeerConnection(ICE_SERVERS);
+  
+      // Add local tracks to the connection
+      localStreamRef.current.getTracks().forEach((track: MediaStreamTrack) => {
+        pc.addTrack(track, localStreamRef.current as MediaStream);
+      });
+  
+      pc.ontrack = (event: RTCTrackEvent) => {
+        console.log('[ontrack] Received remote track', event.track);
+        const [remoteStream] = event.streams;
+  
+        // Store the latest remote stream in state and ref
+        if (remoteStream) {
+          setRemoteStream(remoteStream);
+          remoteMediaStreamRef.current = remoteStream;
+        }
+  
+        if (!remoteVideoRef.current) {
+          console.warn(
+            '[ontrack] remoteVideoRef is null, buffering remote stream until video element mounts'
+          );
+          return;
+        }
+  
+        const videoEl = remoteVideoRef.current as HTMLVideoElement;
+  
+        // Only set srcObject if it's different
+        if (videoEl.srcObject !== remoteStream) {
+          console.log('[ontrack] Setting remote video srcObject');
+          videoEl.srcObject = remoteStream;
+        }
+  
+        const attemptPlay = () => {
+          videoEl
+            .play()
+            .then(() => console.log('[ontrack] Remote video playing'))
+            .catch((err) => {
+              if (err.name === 'AbortError') {
+                console.warn('[ontrack] play() aborted, ignoring');
+                return;
+              }
+              console.warn('[ontrack] play blocked, waiting for user interaction');
+              const resume = () => {
+                videoEl.play().catch(() => {});
+                document.removeEventListener('click', resume);
+              };
+              document.addEventListener('click', resume, { once: true });
+            });
         };
-      }
-    };
-
-    // ICE candidate handling
-    // Monitor connection state changes more closely
-    pc.onconnectionstatechange = () => {
-      console.log(`Connection state changed to: ${pc.connectionState}`);
-      
-      if (pc.connectionState === 'connected') {
-        console.log('WebRTC connection established successfully');
-        // Try to play remote video again when connection is established
-        if (remoteVideoRef.current && remoteVideoRef.current.paused) {
-          console.log('Attempting to play remote video after connection established');
-          setTimeout(() => {
-            if (remoteVideoRef.current) {
-              remoteVideoRef.current.play()
-                .then(() => console.log('Remote video playing after connection established'))
-                .catch(e => console.error('Error playing remote video after connection established:', e));
-            }
-          }, 1000); // Small delay to ensure everything is ready
+  
+        if (videoEl.readyState >= HTMLMediaElement.HAVE_ENOUGH_DATA) {
+          attemptPlay();
+        } else {
+          videoEl.onloadeddata = () => {
+            videoEl.onloadeddata = null;
+            attemptPlay();
+          };
         }
-      } else if (pc.connectionState === 'disconnected' || pc.connectionState === 'failed') {
-        console.error(`WebRTC connection ${pc.connectionState}`);
-        if (!intentionalDisconnect) {
-          setError(`Connection ${pc.connectionState}. Please try again.`);
+      };
+  
+      pc.onicecandidate = (event: RTCPeerConnectionIceEvent) => {
+        if (event.candidate && socket) {
+          console.log('Sending ICE candidate', event.candidate);
+          socket.emit('ice-candidate', {
+            candidate: event.candidate,
+            to: partnerProfile?.id,
+            from: user?.id,
+          });
+        } else if (!event.candidate) {
+          console.log('All ICE candidates gathered');
         }
-      }
-    };
-    
-    pc.onicecandidate = (event: RTCPeerConnectionIceEvent) => {
-      if (event.candidate && socket) {
-        console.log('Sending ICE candidate', event.candidate);
-        // Always send the full candidate object with the same structure
-        socket.emit('ice-candidate', {
-          candidate: event.candidate,
-          to: partnerProfile?.id,
-          from: user?.id
-        });
-      } else if (!event.candidate) {
-        console.log('All ICE candidates gathered');
-      }
-    };
-    
-    // Enable trickle ICE by buffering candidates
-    pc.onicegatheringstatechange = () => {
-      console.log('ICE gathering state:', pc.iceGatheringState);
-    };
-    
-    // Monitor connection state changes
-    pc.oniceconnectionstatechange = () => {
-      console.log('ICE connection state:', pc.iceConnectionState);
-      
-      if (pc.iceConnectionState === 'disconnected') {
-        console.log('ICE connection disconnected - waiting for recovery');
-        // Don't immediately clean up - give it a chance to recover
-      } else if (pc.iceConnectionState === 'failed' || pc.iceConnectionState === 'closed') {
-        console.log('ICE connection failed or closed');
-        // Only clean up if this wasn't an intentional disconnect
-        if (!intentionalDisconnect && reconnectionAttempts >= MAX_RECONNECTION_ATTEMPTS) {
-          cleanupCall();
+      };
+  
+      pc.onicegatheringstatechange = () => {
+        console.log('ICE gathering state:', pc.iceGatheringState);
+      };
+  
+      pc.oniceconnectionstatechange = () => {
+        console.log('ICE connection state:', pc.iceConnectionState);
+      };
+  
+      pc.onconnectionstatechange = () => {
+        console.log('Connection state:', pc.connectionState);
+  
+        if (pc.connectionState === 'connected') {
+          console.log('Peer connection established successfully');
+          setError(null);
+  
+          // After connection is established, try to ensure remote video is playing
+          if (remoteVideoRef.current && remoteVideoRef.current.paused) {
+            console.log('Attempting to play remote video after connection established');
+            setTimeout(() => {
+              if (remoteVideoRef.current) {
+                remoteVideoRef.current
+                  .play()
+                  .then(() =>
+                    console.log('Remote video playing after connection established')
+                  )
+                  .catch((e) =>
+                    console.error(
+                      'Error playing remote video after connection established:',
+                      e
+                    )
+                  );
+              }
+            }, 1000);
+          }
+        } else if (pc.connectionState === 'failed') {
+          console.log('Peer connection failed');
+          setError('Connection to peer failed. Attempting to reconnect...');
         }
-      }
-    };
-    
-    pc.onconnectionstatechange = () => {
-      console.log('Connection state:', pc.connectionState);
-      
-      if (pc.connectionState === 'connected') {
-        console.log('Peer connection established successfully');
-        setError(null);
-        // Reset reconnection attempts counter when connection succeeds
-        setReconnectionAttempts(0);
-      } else if (pc.connectionState === 'failed') {
-        console.log('Peer connection failed');
-        setError('Connection to peer failed. Attempting to reconnect...');
-        // Only clean up if this wasn't an intentional disconnect
-        if (!intentionalDisconnect && reconnectionAttempts >= MAX_RECONNECTION_ATTEMPTS) {
-          setError('Connection to peer failed. Please try again.');
-          cleanupCall();
-        }
-      }
-    };
-
-    peerConnectionRef.current = pc;
-    return pc;
-  }, [socket, partnerProfile, intentionalDisconnect, cleanupCall, reconnectionAttempts]);
-
+      };
+  
+      peerConnectionRef.current = pc;
+      return pc;
+    }, [socket, partnerProfile, user]);
   // When the remote video element mounts and we already have a remote stream buffered,
   // attach it and try to play it.
   useEffect(() => {
