@@ -226,6 +226,14 @@ useEffect(() => {
       }
       peerConnectionRef.current = null;
     }
+
+    // Clear any buffered remote media
+    remoteMediaStreamRef.current = null;
+
+    // Clear remote video element srcObject if present
+    if (remoteVideoRef.current) {
+      remoteVideoRef.current.srcObject = null;
+    }
     
     // Reset state
     setLocalStream(null);
@@ -523,6 +531,16 @@ useEffect(() => {
   const setupPeerConnection = useCallback(() => {
     if (!localStreamRef.current) return null;
 
+    // Reuse existing peer connection if it's still valid
+    if (
+      peerConnectionRef.current &&
+      peerConnectionRef.current.signalingState !== 'closed' &&
+      peerConnectionRef.current.connectionState !== 'failed'
+    ) {
+      console.log('Reusing existing peer connection with state:', peerConnectionRef.current.connectionState);
+      return peerConnectionRef.current;
+    }
+
     console.log('Setting up new peer connection');
     const pc = new RTCPeerConnection(ICE_SERVERS);
     
@@ -536,8 +554,14 @@ useEffect(() => {
       console.log('[ontrack] Received remote track', event.track);
       const [remoteStream] = event.streams;
 
+      // Store the latest remote stream in state and ref
+      if (remoteStream) {
+        setRemoteStream(remoteStream);
+        remoteMediaStreamRef.current = remoteStream;
+      }
+
       if (!remoteVideoRef.current) {
-        console.warn('[ontrack] remoteVideoRef is null');
+        console.warn('[ontrack] remoteVideoRef is null, buffering remote stream until video element mounts');
         return;
       }
 
@@ -661,6 +685,47 @@ useEffect(() => {
     return pc;
   }, [socket, partnerProfile, intentionalDisconnect, cleanupCall, reconnectionAttempts]);
 
+  // When the remote video element mounts and we already have a remote stream buffered,
+  // attach it and try to play it.
+  useEffect(() => {
+    if (remoteVideoRef.current && remoteMediaStreamRef.current) {
+      const videoEl = remoteVideoRef.current;
+      const stream = remoteMediaStreamRef.current;
+
+      console.log('[remote video] Attaching buffered remote stream after ref mount');
+      videoEl.srcObject = stream;
+
+      const attemptPlay = () => {
+        videoEl
+          .play()
+          .then(() => console.log('[remote video] Playing after ref mount'))
+          .catch((err) => {
+            if (err.name === 'AbortError') {
+              console.warn('[remote video] play() aborted after ref mount, ignoring');
+              return;
+            }
+            console.warn('[remote video] play blocked after ref mount, waiting for user interaction');
+            const resume = () => {
+              videoEl.play().catch(() => {});
+              document.removeEventListener('click', resume);
+            };
+            document.addEventListener('click', resume, { once: true });
+          });
+      };
+
+      if (videoEl.readyState >= HTMLMediaElement.HAVE_ENOUGH_DATA) {
+        attemptPlay();
+      } else {
+        videoEl.onloadeddata = () => {
+          videoEl.onloadeddata = null;
+          attemptPlay();
+        };
+      }
+
+      remoteMediaStreamRef.current = null;
+    }
+  }, [remoteStream]);
+
   // This effect manages peer connection reconnection attempts
   
   // Heartbeat interval to keep connections alive
@@ -722,316 +787,6 @@ useEffect(() => {
     }
   }, [peerConnectionRef.current?.connectionState, reconnectionAttempts, intentionalDisconnect, isCalling, socket, partnerProfile, user]);
 
-  // Main effect for creating and managing peer connection
-  useEffect(() => {
-    if (!socket || !localStream) {
-      console.log('Skipping peer connection setup - missing dependencies:', { 
-        socketAvailable: !!socket, 
-        localStreamAvailable: !!localStream 
-      });
-      
-      // Check socket connection status
-      if (socket) {
-        console.log('Socket connection status:', {
-          connected: socket.connected,
-          id: socket.id,
-          disconnected: socket.disconnected
-        });
-        
-        // If socket exists but is not connected, try to reconnect
-        if (!socket.connected) {
-          console.log('Socket exists but not connected - attempting to reconnect');
-          socket.connect();
-          
-          // Set up a reconnection attempt with a timeout
-          const reconnectTimer = setTimeout(() => {
-            if (socket && !socket.connected) {
-              console.log('Socket still not connected after timeout - forcing reconnection');
-              // Force a new connection by recreating the socket
-              try {
-                // Try to disconnect first if it's in a weird state
-                socket.disconnect();
-                // Try with different transport options
-                socket.io.opts.transports = ['polling', 'websocket'];
-                console.log('Switching transport order and reconnecting...');
-                socket.connect();
-              } catch (error) {
-                console.error('Error during socket reconnection:', error);
-              }
-            }
-          }, 3000);
-          
-          return () => clearTimeout(reconnectTimer);
-        }
-      } else {
-        console.log('Socket is null - check socket initialization');
-      }
-      
-      // Check why local stream is not available
-      if (!localStream && localStreamRef.current) {
-        console.log('localStream state is null but localStreamRef exists - syncing state');
-        setLocalStream(localStreamRef.current);
-      } else if (!localStream) {
-        console.log('Both localStream and localStreamRef are null - check camera initialization');
-        // Attempt to reinitialize camera if it's been more than 5 seconds since component mounted
-        const timeSinceMount = Date.now() - mountTimeRef.current;
-        if (timeSinceMount > 5000) {
-          console.log('Attempting to reinitialize camera after timeout');
-          if (initCameraRef.current) {
-            initCameraRef.current();
-          } else {
-            console.error('initCamera function not available');
-          }
-        }
-      }
-      
-      return;
-    }
-    
-    console.log('Setting up peer connection with local stream tracks:', 
-      localStream.getTracks().map(t => ({ kind: t.kind, enabled: t.enabled, muted: t.muted })));
-    
-    // Log socket connection details
-    console.log('Socket connection details:', {
-      connected: socket.connected,
-      id: socket.id,
-      hasListeners: socket.hasListeners('offer')
-    });
-    
-    // Reset reconnection attempts when creating a new connection
-    setReconnectionAttempts(0);
-    
-    const pc = new RTCPeerConnection(ICE_SERVERS);
-
-    localStream.getTracks().forEach(track => {
-      pc.addTrack(track, localStream);
-    });
-
-    pc.ontrack = (event: RTCTrackEvent) => {
-      console.log('Received remote track', event.streams);
-      
-      // Check if we have valid streams
-      if (!event.streams || event.streams.length === 0) {
-        console.error('No remote streams available in ontrack event');
-        setError('No remote video stream received. Please try again.');
-        return;
-      }
-      
-      // Check if we have video tracks
-      const hasVideoTrack = event.streams[0].getTracks().some(track => track.kind === 'video');
-      if (!hasVideoTrack) {
-        console.warn('Remote stream has no video track');
-        // Continue anyway as audio-only might be intentional
-      } else {
-        console.log('Remote stream has video track - good!');
-      }
-      
-      // Log detailed information about the stream
-      const remoteStream = event.streams[0];
-      console.log('Remote stream details:', {
-        id: remoteStream.id,
-        active: remoteStream.active,
-        trackCount: remoteStream.getTracks().length
-      });
-      
-      // Set the remote stream in state
-      setRemoteStream(remoteStream);
-      
-      // Setup remote video with enhanced retry mechanism
-      const setupRemoteVideo = (retryCount = 0, maxRetries = 10) => {
-        if (remoteVideoRef.current) {
-          console.log(`Setting up remote video (attempt ${retryCount + 1})`);
-          
-          // Force clean up any existing srcObject
-          if (remoteVideoRef.current.srcObject) {
-            console.log('Cleaning up existing srcObject before setting new one');
-            const oldTracks = (remoteVideoRef.current.srcObject as MediaStream)?.getTracks() || [];
-            oldTracks.forEach(track => track.stop());
-            remoteVideoRef.current.srcObject = null;
-          }
-          
-          // Ensure video element is visible
-          remoteVideoRef.current.style.display = 'block';
-          
-          // Set the new srcObject
-          remoteVideoRef.current.srcObject = remoteStream;
-          console.log('[ontrack] Set remote video srcObject:', remoteStream);
-          
-          // Force the video to be visible in the DOM
-          if (remoteVideoRef.current.parentElement) {
-            remoteVideoRef.current.parentElement.style.display = 'flex';
-          }
-          
-          // Log detailed track information
-          const trackInfo = remoteStream.getTracks().map(t => ({ 
-            kind: t.kind, 
-            enabled: t.enabled, 
-            muted: t.muted,
-            readyState: t.readyState,
-            id: t.id
-          }));
-          console.log('[ontrack] Remote video tracks:', trackInfo);
-          
-          // Force a reload of the video element
-          remoteVideoRef.current.load();
-          
-          // Set a timeout to check if video is displaying properly
-          setTimeout(() => {
-            if (remoteVideoRef.current) {
-              const videoWidth = remoteVideoRef.current.videoWidth;
-              const videoHeight = remoteVideoRef.current.videoHeight;
-              console.log('Checking remote video dimensions after timeout:', { videoWidth, videoHeight });
-              
-              if (videoWidth === 0 || videoHeight === 0) {
-                console.warn('Remote video has zero dimensions after timeout - attempting to fix');
-                // Try reapplying the srcObject
-                const currentStream = remoteVideoRef.current.srcObject;
-                remoteVideoRef.current.srcObject = null;
-                setTimeout(() => {
-                  if (remoteVideoRef.current) {
-                    remoteVideoRef.current.srcObject = currentStream;
-                    remoteVideoRef.current.play()
-                      .then(() => console.log('Remote video playing after dimension fix'))
-                      .catch(e => console.error('Error playing remote video after dimension fix:', e));
-                  }
-                }, 500);
-              }
-            }
-          }, 2000);
-          
-          // Check if tracks are muted and set up listeners
-          remoteStream.getTracks().forEach(track => {
-            console.log(`Track ${track.kind} muted:`, track.muted, 'readyState:', track.readyState);
-            
-            // Listen for track ended
-            track.onended = () => {
-              console.log(`Track ${track.kind} ended`);
-            };
-            
-            // Listen for unmute event
-            track.onunmute = () => {
-              console.log(`Track ${track.kind} unmuted`);
-              // Try to play video again when tracks become unmuted
-              if (remoteVideoRef.current && remoteVideoRef.current.paused) {
-                remoteVideoRef.current.play()
-                  .then(() => console.log('Remote video playing after track unmute'))
-                  .catch(e => console.error('Error playing remote video after unmute:', e));
-              }
-            };
-          });
-          
-          // Ensure video plays with muted audio first to bypass autoplay restrictions
-          remoteVideoRef.current.muted = true;
-          
-          // Add event listeners to debug video element state
-          remoteVideoRef.current.onloadedmetadata = () => {
-            console.log('Remote video loadedmetadata event fired');
-            if (remoteVideoRef.current && remoteVideoRef.current.paused) {
-              remoteVideoRef.current.play()
-                .then(() => console.log('Remote video playing after metadata loaded'))
-                .catch(e => {
-                  console.error('Error playing remote video after metadata loaded:', e);
-                  // Try playing again with a timeout
-                  setTimeout(() => {
-                    if (remoteVideoRef.current && remoteVideoRef.current.paused) {
-                      remoteVideoRef.current.play()
-                        .then(() => console.log('Remote video playing after retry'))
-                        .catch(e => console.error('Error playing remote video after retry:', e));
-                    }
-                  }, 1000);
-                });
-            }
-          };
-          
-          remoteVideoRef.current.onerror = (e) => {
-            console.error('Remote video element error:', e);
-          };
-          
-          // Add a visibility change listener to retry playing when tab becomes visible
-          const handleVisibilityChange = () => {
-            if (document.visibilityState === 'visible' && remoteVideoRef.current && remoteVideoRef.current.paused) {
-              remoteVideoRef.current.play()
-                .then(() => console.log('Remote video playing after visibility change'))
-                .catch(e => console.error('Error playing remote video after visibility change:', e));
-            }
-          };
-          document.addEventListener('visibilitychange', handleVisibilityChange);
-          
-          // Try playing the video immediately
-          const playPromise = remoteVideoRef.current.play();
-          if (playPromise !== undefined) {
-            playPromise
-              .then(() => {
-                console.log('Remote video playing successfully');
-                // After successful play, you can unmute if needed
-                // remoteVideoRef.current.muted = false;
-              })
-              .catch(e => {
-                console.error('Error playing remote video:', e);
-                // Add a click event listener to the video container to play on user interaction
-                const videoContainer = remoteVideoRef.current?.parentElement;
-                if (videoContainer) {
-                  videoContainer.addEventListener('click', () => {
-                    if (remoteVideoRef.current && remoteVideoRef.current.paused) {
-                      remoteVideoRef.current.play()
-                        .then(() => console.log('Remote video playing after user interaction'))
-                        .catch(err => console.error('Still cannot play remote video:', err));
-                    }
-                  });
-                  console.log('Added click handler to play video on user interaction');
-                }
-              });
-          }
-        } else {
-          console.error(`Remote video ref is not available (attempt ${retryCount + 1} of ${maxRetries})`);
-          if (retryCount < maxRetries) {
-            // Retry after a delay - the ref might not be available immediately
-            setTimeout(() => {
-              console.log(`Retrying remote video setup (attempt ${retryCount + 2} of ${maxRetries})`);
-              setupRemoteVideo(retryCount + 1, maxRetries);
-            }, 500); // Increase delay between retries
-          } else {
-            console.error('Max retries reached for remote video setup');
-            setError('Could not initialize remote video. Please refresh the page or try a different browser.');
-          }
-        }
-      };
-      
-      // Start the remote video setup process
-      setupRemoteVideo();
-    };
-
-    pc.onicecandidate = (event: RTCPeerConnectionIceEvent) => {
-      if (event.candidate) {
-        socket.emit('ice-candidate', {
-          candidate: event.candidate,
-          to: partnerProfile?.id,
-          from: user?.id
-        });
-      }
-    };
-    
-    // Add connection state monitoring
-    pc.onconnectionstatechange = () => {
-      console.log(`Connection state changed: ${pc.connectionState}`);
-      if (pc.connectionState === 'connected') {
-        // Reset reconnection attempts when successfully connected
-        setReconnectionAttempts(0);
-        console.log('WebRTC connection fully established!');
-        
-        // Force a re-play attempt when connection is fully established
-        if (remoteVideoRef.current && remoteVideoRef.current.paused) {
-          remoteVideoRef.current.play()
-            .then(() => console.log('Remote video playing after connection established'))
-            .catch(e => console.error('Still cannot play remote video:', e));
-        }
-      }
-    };
-
-    return () => {
-      pc.close();
-    };
-  }, [socket, localStream]);
 
   useEffect(() => {
     if (!socket) return;
