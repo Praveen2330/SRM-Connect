@@ -857,18 +857,19 @@ const remoteMediaStreamRef = useRef<MediaStream | null>(null);
       }
     };
 
-    const handleMatchFound = (data: { partnerId: string, isInitiator: boolean, partnerProfile: UserProfile }) => {
+    const handleMatchFound = (data: { partnerId: string; isInitiator: boolean; partnerProfile: UserProfile }) => {
       setIsMatching(false);
       setIsCalling(true);
       setPartnerProfile(data.partnerProfile);
 
-      // Set up peer connection
-      const peerConnection = setupPeerConnection();
-      if (!peerConnection) return;
-
-      // Only create offer if we are the initiator
       if (data.isInitiator) {
+        console.log('[match-found] You are the initiator, creating peer connection and offer');
+        const peerConnection = setupPeerConnection();
+        if (!peerConnection) return;
         handleCreateOffer(peerConnection, data.partnerId);
+      } else {
+        console.log('[match-found] Match found, waiting for offer from partner');
+        // The non-initiator will create the RTCPeerConnection in handleOffer
       }
     };
 
