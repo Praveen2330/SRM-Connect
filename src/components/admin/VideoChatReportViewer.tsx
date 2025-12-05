@@ -45,8 +45,7 @@ const VideoChatReportViewer: React.FC<VideoChatReportViewerProps> = ({ canManage
     try {
       let query = supabase
         .from('user_reports')
-        .select('*')
-        .eq('report_type', 'video');
+        .select('*');
       
       if (filterStatus !== 'all') {
         query = query.eq('status', filterStatus);
