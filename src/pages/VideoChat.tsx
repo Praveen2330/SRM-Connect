@@ -436,52 +436,6 @@ const remoteMediaStreamRef = useRef<MediaStream | null>(null);
         // Set the stream to state and refs
         setLocalStream(stream);
         localStreamRef.current = stream;
-        
-        // Ensure video plays immediately with enhanced error handling and retry mechanism
-        const setupLocalVideo = (retryCount = 0, maxRetries = 5) => {
-          if (localVideoRef.current) {
-            console.log('Setting local video srcObject with stream tracks:', stream.getTracks().map(t => ({ kind: t.kind, enabled: t.enabled, muted: t.muted })));
-            localVideoRef.current.srcObject = stream;
-            
-            // Force a reload of the video element
-            localVideoRef.current.load();
-            
-            // Add event listeners to debug video element state
-            localVideoRef.current.onloadedmetadata = () => {
-              console.log('Local video loadedmetadata event fired');
-              localVideoRef.current?.play()
-                .then(() => console.log('Local video playing successfully'))
-                .catch(e => {
-                  console.error('Error playing local video after metadata loaded:', e);
-                  // Try playing again with a timeout
-                  setTimeout(() => {
-                    localVideoRef.current?.play()
-                      .then(() => console.log('Local video playing after retry'))
-                      .catch(e => console.error('Error playing local video after retry:', e));
-                  }, 1000);
-                });
-            };
-            
-            localVideoRef.current.onerror = (e) => {
-              console.error('Local video element error:', e);
-            };
-          } else {
-            console.error(`Local video ref is not available (attempt ${retryCount + 1} of ${maxRetries})`);
-            if (retryCount < maxRetries) {
-              // Retry after a delay - the ref might not be available immediately
-              setTimeout(() => {
-                console.log(`Retrying local video setup (attempt ${retryCount + 2} of ${maxRetries})`);
-                setupLocalVideo(retryCount + 1, maxRetries);
-              }, 500); // Increase delay between retries
-            } else {
-              console.error('Max retries reached for local video setup');
-              setError('Could not initialize video. Please refresh the page or try a different browser.');
-            }
-          }
-        };
-        
-        // Start the setup process
-        setupLocalVideo();
       } catch (err) {
         console.error('Error accessing camera:', err);
         setError('Could not access camera or microphone');
@@ -707,6 +661,44 @@ const remoteMediaStreamRef = useRef<MediaStream | null>(null);
 
   // This effect manages peer connection reconnection attempts
   
+  // When the local video element mounts and we already have a local stream,
+  // attach it and try to play it.
+  useEffect(() => {
+    if (!localVideoRef.current || !localStreamRef.current) {
+      return;
+    }
+  
+    const videoEl = localVideoRef.current;
+    const stream = localStreamRef.current;
+  
+    console.log('[local video] Attaching local stream after ref mount');
+    videoEl.srcObject = stream;
+  
+    const handleLoadedMetadata = () => {
+      videoEl
+        .play()
+        .then(() => console.log('[local video] playing after ref mount'))
+        .catch((err) => {
+          console.error('[local video] play error after ref mount:', err);
+        });
+    };
+  
+    if (videoEl.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) {
+      handleLoadedMetadata();
+    } else {
+      videoEl.onloadedmetadata = () => {
+        videoEl.onloadedmetadata = null;
+        handleLoadedMetadata();
+      };
+    }
+  
+    return () => {
+      if (videoEl.onloadedmetadata === handleLoadedMetadata) {
+        videoEl.onloadedmetadata = null;
+      }
+    };
+  }, [localStream]);
+
   // Heartbeat interval to keep connections alive
   useEffect(() => {
     if (!socket || !isCalling) return;
