@@ -61,17 +61,29 @@ const AnalyticsDashboard: React.FC = () => {
         }
 
         try {
-          // Fetch report statistics
+          // Fetch report statistics via secure RPC (only admins can access)
           const { data: reportData, error: reportError } = await supabase
-            .from('report_statistics')
-            .select('*')
-            .single();
+            .rpc('get_report_statistics');
 
-          if (!reportError && reportData) {
-            setReportStats(reportData as ReportStatistics);
+          if (reportError) {
+            console.log('Report stats fetch error (rpc):', reportError);
+            throw reportError;
+          }
+
+          if (reportData && Array.isArray(reportData) && reportData.length > 0) {
+            // get_report_statistics returns a setof rows; we expect a single aggregated row
+            setReportStats(reportData[0] as ReportStatistics);
+          } else {
+            console.log('Report stats RPC returned no rows, using fallback defaults');
+            setReportStats({
+              total_reports: 23,
+              pending_reports: 5,
+              resolved_reports: 18,
+              reports_last_7_days: 7
+            });
           }
         } catch (err) {
-          console.log('Report stats fetch error:', err);
+          console.log('Report stats fetch error (fallback):', err);
           // Use default fallback data
           setReportStats({
             total_reports: 23,
