@@ -66,14 +66,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       return status;
     }
     
-    // PERMANENT SOLUTION: Check for specific admin user ID
-    if (user.id === 'e1f9caeb-ae74-41af-984a-b44230ac7491') {
-      console.log('PERMANENT ADMIN ACCESS GRANTED TO:', user.email);
-      const status = { isAdmin: true, role: 'super_admin' as AdminRole, lastChecked: new Date() };
-      setAdminStatus(status);
-      return status;
-    }
-    
     try {
       // Standard check in the admin_users table
       const { data, error } = await supabase
