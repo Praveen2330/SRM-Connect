@@ -2,6 +2,12 @@ import React, { useState, useEffect, useRef } from 'react';
 import socketIO from 'socket.io-client';
 import { Shield, AlertTriangle, CheckCircle, XCircle, RefreshCw } from 'lucide-react';
 
+// Choose Socket.IO server based on environment
+const SOCKET_URL =
+  import.meta.env.MODE === 'production'
+    ? 'https://srm-connect-socketio.onrender.com'
+    : (import.meta.env.VITE_SOCKET_URL || 'http://localhost:3002');
+
 interface ChatReport {
   id: string;
   reporterId: string;
@@ -33,8 +39,7 @@ const ChatReportViewer: React.FC<ChatReportViewerProps> = ({ canManage, updateCo
 
   useEffect(() => {
     // Connect to Socket.IO server
-    const socketUrl = import.meta.env.VITE_SOCKET_URL || 'http://localhost:3002';
-    socketRef.current = socketIO(socketUrl, {
+    socketRef.current = socketIO(SOCKET_URL, {
       transports: ['polling', 'websocket']
     });
 
