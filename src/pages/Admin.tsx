@@ -1,7 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../hooks/useAuth';
-import { supabase } from '../lib/supabase';
 
 // Define admin types here to avoid import errors
 type AdminRole = 'viewer' | 'moderator' | 'super_admin';
@@ -25,7 +24,7 @@ import BroadcastMessages from '../components/admin/BroadcastMessages';
 import AdminAccessControl from '../components/admin/AdminAccessControl';
 
 const Admin: React.FC = () => {
-  const { user, loading } = useAuth();
+  const { user, loading, adminStatus } = useAuth();
   const navigate = useNavigate();
   const [adminUser, setAdminUser] = useState<AdminUser | null>(null);
   const [activeTab, setActiveTab] = useState<string>('dashboard');
@@ -37,78 +36,34 @@ const Admin: React.FC = () => {
         // Still loading auth state, wait
         return;
       }
-      
+
       if (!user) {
         // Not logged in, redirect to login
         navigate('/login');
         return;
       }
-      
-      // EMERGENCY BYPASS: Allow direct access for this specific user ID
-      if (user.id === 'e1f9caeb-ae74-41af-984a-b44230ac7491') {
-        console.log('*** DIRECT ADMIN ACCESS GRANTED FOR:', user.email);
-        
-        // Create a temporary admin user object for this session
-        setAdminUser({
-          user_id: user.id,
-          role: 'super_admin',
-          created_at: new Date().toISOString(),
-          last_sign_in: new Date().toISOString()
-        });
-        
+
+      // Use adminStatus from AuthContext instead of hard-coded IDs or direct Supabase queries
+      if (!adminStatus || !adminStatus.isAdmin) {
+        // Not an admin, redirect after short delay
+        setTimeout(() => navigate('/dashboard'), 1000);
         setIsLoading(false);
         return;
       }
-      
-      try {
-        // First make sure the admin_users table exists by checking for a single row
-        const { error: tableCheckError } = await supabase
-          .from('admin_users')
-          .select('count')
-          .limit(1);
-          
-        if (tableCheckError && tableCheckError.code === '42P01') {
-          // Table doesn't exist - needs to be created
-          console.error('Admin tables not set up:', tableCheckError);
-          setIsLoading(false);
-          return;
-        }
-        
-        // Check if current user is an admin
-        const { data, error } = await supabase
-          .from('admin_users')
-          .select('*')
-          .eq('user_id', user.id)
-          .maybeSingle();
 
-        if (error) {
-          console.error('Error checking admin status:', error);
-          // Don't redirect immediately, give better feedback
-          setIsLoading(false);
-          return;
-        }
+      // Build a lightweight AdminUser object from the known auth/admin status
+      setAdminUser({
+        user_id: user.id,
+        role: (adminStatus.role as AdminRole) || 'viewer',
+        created_at: new Date().toISOString(),
+        last_sign_in: new Date().toISOString(),
+      });
 
-        if (data) {
-          // Update last sign-in time for admin
-          await supabase
-            .from('admin_users')
-            .update({ last_sign_in: new Date().toISOString() })
-            .eq('user_id', user.id);
-            
-          setAdminUser(data as AdminUser);
-        } else {
-          // User is not an admin, redirect after short delay
-          setTimeout(() => navigate('/dashboard'), 1000);
-        }
-      } catch (error) {
-        console.error('Admin panel error:', error);
-      } finally {
-        setIsLoading(false);
-      }
+      setIsLoading(false);
     };
 
     checkAdminStatus();
-  }, [user, loading, navigate]);
+  }, [user, loading, adminStatus, navigate]);
 
   // Enhanced debugging information
   console.log('Admin component state:', {
@@ -143,8 +98,8 @@ const Admin: React.FC = () => {
             <p>Debug info:</p>
             <p>User ID: {user?.id}</p>
             <p>User Email: {user?.email}</p>
-            <p>Target ID: e1f9caeb-ae74-41af-984a-b44230ac7491</p>
-            <p>Match: {user?.id === 'e1f9caeb-ae74-41af-984a-b44230ac7491' ? 'Yes' : 'No'}</p>
+            <p>Admin status: {adminStatus?.isAdmin ? 'Admin' : 'Not admin'}</p>
+            <p>Admin role: {adminStatus?.role ?? 'none'}</p>
           </div>
           <div className="flex space-x-2 justify-center">
             <button
