@@ -484,8 +484,6 @@ const remoteMediaStreamRef = useRef<MediaStream | null>(null);
   
     // Define setupPeerConnection function
     const setupPeerConnection = useCallback(() => {
-      if (!localStreamRef.current) return null;
-  
       // Always create a brand new peer connection to avoid reused-state bugs
       if (peerConnectionRef.current) {
         try {
@@ -504,10 +502,15 @@ const remoteMediaStreamRef = useRef<MediaStream | null>(null);
       console.log('Setting up new peer connection');
       const pc = new RTCPeerConnection(ICE_SERVERS);
   
-      // Add local tracks to the connection
-      localStreamRef.current.getTracks().forEach((track: MediaStreamTrack) => {
-        pc.addTrack(track, localStreamRef.current as MediaStream);
-      });
+      // Add local tracks to the connection if we already have a stream
+      if (localStreamRef.current) {
+        console.log('[setupPeerConnection] Adding local tracks to new peer connection');
+        localStreamRef.current.getTracks().forEach((track: MediaStreamTrack) => {
+          pc.addTrack(track, localStreamRef.current as MediaStream);
+        });
+      } else {
+        console.warn('[setupPeerConnection] localStreamRef is null; will add tracks when stream becomes available');
+      }
   
       pc.ontrack = (event: RTCTrackEvent) => {
         console.log('[ontrack] Received remote track', event.track);
@@ -618,6 +621,30 @@ const remoteMediaStreamRef = useRef<MediaStream | null>(null);
       peerConnectionRef.current = pc;
       return pc;
     }, [socket, partnerProfile, user]);
+
+    // When we obtain a local stream after the peer connection has been created,
+    // make sure its tracks are added to the connection.
+    useEffect(() => {
+      if (!peerConnectionRef.current || !localStreamRef.current) {
+        return;
+      }
+
+      const pc = peerConnectionRef.current;
+      const stream = localStreamRef.current;
+
+      console.log('[local stream] Ensuring local tracks are added to peer connection');
+      const existingTracks = pc
+        .getSenders()
+        .map((sender) => sender.track)
+        .filter((track): track is MediaStreamTrack => !!track);
+
+      stream.getTracks().forEach((track) => {
+        if (!existingTracks.includes(track)) {
+          console.log('[local stream] Adding missing local track to peer connection:', track.kind);
+          pc.addTrack(track, stream);
+        }
+      });
+    }, [localStream]);
   // When the remote video element mounts and we already have a remote stream buffered,
   // attach it and try to play it.
   useEffect(() => {
