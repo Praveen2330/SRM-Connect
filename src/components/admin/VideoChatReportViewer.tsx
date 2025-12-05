@@ -5,9 +5,9 @@ import { Shield, CheckCircle, XCircle, RefreshCw } from 'lucide-react';
 interface VideoChatReport {
   id: string;
   reporter_id: string;
-  reported_user_id: string;
+  reported_id: string;
   reason: string;
-  reported_at: string;
+  created_at: string;
   status: 'pending' | 'in_review' | 'resolved' | 'dismissed';
   reporter?: {
     email?: string;
@@ -55,15 +55,22 @@ const VideoChatReportViewer: React.FC<VideoChatReportViewerProps> = ({ canManage
         .from('user_reports')
         .select(`
           *,
-          reporter:reporter_id(email, display_name),
-          reported_user:reported_user_id(email, display_name)
-        `);
+          reporter:reporter_id (
+            email,
+            display_name
+          ),
+          reported_user:reported_id (
+            email,
+            display_name
+          )
+        `)
+        .eq('report_type', 'video');
       
       if (filterStatus !== 'all') {
         query = query.eq('status', filterStatus);
       }
       
-      query = query.order('reported_at', { ascending: false });
+      query = query.order('created_at', { ascending: false });
       
       const { data, error } = await query;
       
@@ -185,13 +192,13 @@ const VideoChatReportViewer: React.FC<VideoChatReportViewerProps> = ({ canManage
                       {report.status.replace('_', ' ')}
                     </span>
                     <span className="text-gray-400 text-sm">
-                      {formatDate(report.reported_at)}
+                      {formatDate(report.created_at)}
                     </span>
                   </div>
                   <h3 className="font-medium mt-1">Reason: {report.reason}</h3>
                   <div className="mt-2 text-sm">
                     <div><span className="text-gray-400">Reporter:</span> {report.reporter?.display_name || report.reporter?.email || report.reporter_id}</div>
-                    <div><span className="text-gray-400">Reported User:</span> {report.reported_user?.display_name || report.reported_user?.email || report.reported_user_id}</div>
+                    <div><span className="text-gray-400">Reported User:</span> {report.reported_user?.display_name || report.reported_user?.email || report.reported_id}</div>
                   </div>
                 </div>
               </div>
@@ -245,7 +252,7 @@ const VideoChatReportViewer: React.FC<VideoChatReportViewerProps> = ({ canManage
                 <div className="bg-gray-800 rounded p-4">
                   <div className="text-sm">
                     <div className="text-xs text-gray-500">User ID</div>
-                    <div>{selectedReport.reported_user_id}</div>
+                    <div>{selectedReport.reported_id}</div>
                   </div>
                   {selectedReport.reported_user && (
                     <>
@@ -275,7 +282,7 @@ const VideoChatReportViewer: React.FC<VideoChatReportViewerProps> = ({ canManage
                   </div>
                   <div className="mb-3">
                     <div className="text-xs text-gray-500">Submitted At</div>
-                    <div className="text-sm">{formatDate(selectedReport.reported_at)}</div>
+                    <div className="text-sm">{formatDate(selectedReport.created_at)}</div>
                   </div>
                   <div className="mb-3">
                     <div className="text-xs text-gray-500">Current Status</div>
