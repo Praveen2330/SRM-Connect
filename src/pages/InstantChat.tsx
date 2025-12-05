@@ -6,7 +6,14 @@ import {
   Send, RefreshCw, Flag, ThumbsUp, X, Clock, 
   Shield, Eye, EyeOff
 } from 'lucide-react';
+
 import { toast } from 'react-hot-toast';
+
+// Use environment variable for development, but always use Render Socket.IO server in production
+const SOCKET_URL =
+  import.meta.env.MODE === 'production'
+    ? 'https://srm-connect-socketio.onrender.com'
+    : (import.meta.env.VITE_SOCKET_SERVER_URL || 'http://localhost:3002');
 
 interface ChatMessage {
   id: string;
@@ -100,11 +107,10 @@ export default function InstantChat() {
         if (socketRef.current) {
           socketRef.current.disconnect();
         }
-        const socketUrl = import.meta.env.VITE_SOCKET_SERVER_URL;
-        if (!socketUrl) {
-          throw new Error('Socket.IO server URL not configured');
-        }
+
+        const socketUrl = SOCKET_URL;
         console.log('Connecting to Socket.IO server at:', socketUrl);
+
         socketRef.current = socketIO(socketUrl, {
           query: { userId: currentUser.id },
           transports: ['websocket', 'polling'],
