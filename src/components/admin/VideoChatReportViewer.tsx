@@ -5,18 +5,10 @@ import { Shield, CheckCircle, XCircle, RefreshCw } from 'lucide-react';
 interface VideoChatReport {
   id: string;
   reporter_id: string;
-  reported_id: string;
+  reported_user_id: string;
   reason: string;
   created_at: string;
   status: 'pending' | 'in_review' | 'resolved' | 'dismissed';
-  reporter?: {
-    email?: string;
-    display_name?: string;
-  };
-  reported_user?: {
-    email?: string;
-    display_name?: string;
-  };
 }
 
 interface VideoChatReportViewerProps {
@@ -53,17 +45,7 @@ const VideoChatReportViewer: React.FC<VideoChatReportViewerProps> = ({ canManage
     try {
       let query = supabase
         .from('user_reports')
-        .select(`
-          *,
-          reporter:reporter_id (
-            email,
-            display_name
-          ),
-          reported_user:reported_id (
-            email,
-            display_name
-          )
-        `)
+        .select('*')
         .eq('report_type', 'video');
       
       if (filterStatus !== 'all') {
@@ -197,8 +179,8 @@ const VideoChatReportViewer: React.FC<VideoChatReportViewerProps> = ({ canManage
                   </div>
                   <h3 className="font-medium mt-1">Reason: {report.reason}</h3>
                   <div className="mt-2 text-sm">
-                    <div><span className="text-gray-400">Reporter:</span> {report.reporter?.display_name || report.reporter?.email || report.reporter_id}</div>
-                    <div><span className="text-gray-400">Reported User:</span> {report.reported_user?.display_name || report.reported_user?.email || report.reported_id}</div>
+                    <div><span className="text-gray-400">Reporter:</span> {report.reporter_id}</div>
+                    <div><span className="text-gray-400">Reported User:</span> {report.reported_user_id}</div>
                   </div>
                 </div>
               </div>
@@ -228,22 +210,6 @@ const VideoChatReportViewer: React.FC<VideoChatReportViewerProps> = ({ canManage
                     <div className="text-xs text-gray-500">User ID</div>
                     <div>{selectedReport.reporter_id}</div>
                   </div>
-                  {selectedReport.reporter && (
-                    <>
-                      {selectedReport.reporter.email && (
-                        <div className="mt-2 text-sm">
-                          <div className="text-xs text-gray-500">Email</div>
-                          <div>{selectedReport.reporter.email}</div>
-                        </div>
-                      )}
-                      {selectedReport.reporter.display_name && (
-                        <div className="mt-2 text-sm">
-                          <div className="text-xs text-gray-500">Display Name</div>
-                          <div>{selectedReport.reporter.display_name}</div>
-                        </div>
-                      )}
-                    </>
-                  )}
                 </div>
               </div>
               
@@ -252,24 +218,8 @@ const VideoChatReportViewer: React.FC<VideoChatReportViewerProps> = ({ canManage
                 <div className="bg-gray-800 rounded p-4">
                   <div className="text-sm">
                     <div className="text-xs text-gray-500">User ID</div>
-                    <div>{selectedReport.reported_id}</div>
+                    <div>{selectedReport.reported_user_id}</div>
                   </div>
-                  {selectedReport.reported_user && (
-                    <>
-                      {selectedReport.reported_user.email && (
-                        <div className="mt-2 text-sm">
-                          <div className="text-xs text-gray-500">Email</div>
-                          <div>{selectedReport.reported_user.email}</div>
-                        </div>
-                      )}
-                      {selectedReport.reported_user.display_name && (
-                        <div className="mt-2 text-sm">
-                          <div className="text-xs text-gray-500">Display Name</div>
-                          <div>{selectedReport.reported_user.display_name}</div>
-                        </div>
-                      )}
-                    </>
-                  )}
                 </div>
               </div>
               
