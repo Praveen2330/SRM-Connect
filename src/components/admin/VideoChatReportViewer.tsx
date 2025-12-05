@@ -72,9 +72,7 @@ const VideoChatReportViewer: React.FC<VideoChatReportViewerProps> = ({ canManage
     setActionInProgress(true);
     try {
       const updates = {
-        status,
-        admin_notes: adminNotes.trim() || null,
-        reviewed_at: new Date().toISOString()
+        status
       };
       
       const { error } = await supabase
