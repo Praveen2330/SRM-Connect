@@ -27,13 +27,11 @@ interface ExtendedChatMessage {
   from?: string;
 }
 
-// Use environment variable for production or fallback to localhost for development
-// In production, force use of Render Socket.IO server
+// Use environment variable for development, but always use Render Socket.IO server in production
 const SOCKET_URL =
-  import.meta.env.VITE_SOCKET_SERVER_URL ||
-  (window.location.hostname === 'localhost'
-    ? 'http://localhost:3002'
-    : 'https://srm-connect-socketio.onrender.com');
+  import.meta.env.MODE === 'production'
+    ? 'https://srm-connect-socketio.onrender.com'
+    : (import.meta.env.VITE_SOCKET_SERVER_URL || 'https://srm-connect-socketio.onrender.com');
 
 // Log the socket URL and current environment
 console.log('Using Socket.IO server URL:', SOCKET_URL);
