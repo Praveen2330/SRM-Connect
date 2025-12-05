@@ -69,43 +69,55 @@ const ChatMonitoring: React.FC = () => {
     setError(null);
     
     try {
-      // Prepare time filters
-      let timeConstraint = '';
+           // Prepare time filters using JavaScript dates (Supabase doesn't accept raw SQL in filters)
+           let fromDate: string | null = null;
+
+           if (timeFilter === '24h') {
+             const d = new Date();
+             d.setHours(d.getHours() - 24);
+             fromDate = d.toISOString();
+           } else if (timeFilter === '7d') {
+             const d = new Date();
+             d.setDate(d.getDate() - 7);
+             fromDate = d.toISOString();
+           } else if (timeFilter === '30d') {
+             const d = new Date();
+             d.setDate(d.getDate() - 30);
+             fromDate = d.toISOString();
+           }
+           // if timeFilter === 'all', fromDate stays null and no time filter is applied
+            // Get total count
+            let countQuery = supabase
+            .from('chat_messages')
+            .select('*', { count: 'exact', head: true });
+    
+          if (fromDate) {
+            countQuery = countQuery.gte('created_at', fromDate);
+          }
+    
+          const { count, error: countError } = await countQuery.order('created_at', { ascending: false });
+    
+          if (countError) throw countError;
+          setTotalChats(count || 0);
       
-      if (timeFilter === '24h') {
-        timeConstraint = `created_at > now() - interval '24 hours'`;
-      } else if (timeFilter === '7d') {
-        timeConstraint = `created_at > now() - interval '7 days'`;
-      } else if (timeFilter === '30d') {
-        timeConstraint = `created_at > now() - interval '30 days'`;
-      }
-      
-      // Get total count
-      const { count, error: countError } = await supabase
-        .from('chat_messages')
-        .select('*', { count: 'exact', head: true })
-        .order('created_at', { ascending: false });
-      
-      if (countError) throw countError;
-      setTotalChats(count || 0);
-      
-      // Fetch paginated chats with user profiles
-      let query = supabase
-        .from('chat_messages')
-        .select(`
-          *,
-          sender:user_id(id, name, avatar_url),
-          recipient:recipient_id(id, name, avatar_url)
-        `)
-        .order('created_at', { ascending: false })
-        .range((page - 1) * chatsPerPage, page * chatsPerPage - 1);
-      
-      // Apply time filter if needed
-      if (timeConstraint) {
-        query = query.or(timeConstraint);
-      }
-      
-      const { data, error } = await query;
+            // Fetch paginated chats with user profiles
+            let query = supabase
+            .from('chat_messages')
+            .select(`
+              *,
+              sender:user_id(id, name, avatar_url),
+              recipient:recipient_id(id, name, avatar_url)
+            `)
+            .order('created_at', { ascending: false })
+            .range((page - 1) * chatsPerPage, page * chatsPerPage - 1);
+    
+          // Apply time filter if needed
+          if (fromDate) {
+            query = query.gte('created_at', fromDate);
+          }
+    
+          const { data, error } = await query;
+    
       
       if (error) throw error;
       
