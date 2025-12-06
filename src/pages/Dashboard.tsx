@@ -1,8 +1,18 @@
 import React, { useEffect, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { Camera, MessageCircle, User, Settings, Clock, Heart, MessageSquare } from 'lucide-react';
+import { Camera, MessageCircle, User, Settings, Clock, Heart, MessageSquare, Megaphone } from 'lucide-react';
 import { supabase } from '../lib/supabase';
 import { RecentActivity } from '../types/activity';
+
+interface SystemAnnouncement {
+  id: string;
+  title: string;
+  message: string;
+  created_at: string;
+  expires_at?: string | null;
+  target_users?: string | null;
+  is_active?: boolean | null;
+}
 
 function formatDuration(seconds: number): string {
   if (seconds < 60) return `${seconds}s`;
@@ -18,6 +28,7 @@ function formatTimestamp(date: Date): string {
 function Dashboard() {
   const navigate = useNavigate();
   const [activities, setActivities] = useState<RecentActivity[]>([]);
+  const [announcements, setAnnouncements] = useState<SystemAnnouncement[]>([]);
   const [loading, setLoading] = useState(true);
   const [isAdmin, setIsAdmin] = useState(false);
   const [currentUserId, setCurrentUserId] = useState<string | null>(null);
@@ -92,6 +103,28 @@ function Dashboard() {
           .slice(0, 10);
 
         setActivities(sortedActivities);
+
+        // Fetch active broadcast announcements for all users
+        const { data: announcementData, error: announcementError } = await supabase
+          .from('system_announcements')
+          .select('*')
+          .eq('is_active', true)
+          .order('created_at', { ascending: false });
+
+        if (announcementError) {
+          console.error('Error fetching announcements:', announcementError);
+        } else if (announcementData) {
+          const now = new Date();
+          const visibleAnnouncements = announcementData.filter((a: SystemAnnouncement) => {
+            // Show if no expiry or still valid
+            const notExpired = !a.expires_at || new Date(a.expires_at) >= now;
+            // For now, treat null/empty or 'all' target_users as global
+            const isGlobalTarget =
+              !a.target_users || a.target_users.toLowerCase() === 'all';
+            return notExpired && isGlobalTarget;
+          });
+          setAnnouncements(visibleAnnouncements);
+        }
       } catch (error) {
         console.error('Error in fetchActivities:', error);
       } finally {
@@ -170,40 +203,88 @@ function Dashboard() {
         </div>
 
         <div className="bg-zinc-900 rounded-xl p-8">
-          <h2 className="text-2xl font-bold mb-6">Recent Activity</h2>
+          <h2 className="text-2xl font-bold mb-6">Announcements & Activity</h2>
+
           {loading ? (
             <div className="flex items-center justify-center py-8">
               <div className="animate-spin rounded-full h-8 w-8 border-2 border-blue-500 border-t-transparent"></div>
             </div>
-          ) : activities.length > 0 ? (
-            <div className="space-y-4">
-              {activities.map((activity) => (
-                <div key={activity.id} className="bg-zinc-800 rounded-lg p-4">
-                  <div className="flex items-center justify-between mb-2">
-                    <span className="text-gray-400">{formatTimestamp(activity.timestamp)}</span>
-                    <div className="flex items-center gap-4">
-                      <div className="flex items-center gap-1">
-                        <Clock className="w-4 h-4 text-gray-400" />
-                        <span>{formatDuration(activity.duration)}</span>
-                      </div>
-                      <div className="flex items-center gap-1">
-                        <Heart className="w-4 h-4 text-red-500" />
-                        <span>{activity.likes}</span>
-                      </div>
-                      <div className="flex items-center gap-1">
-                        <MessageSquare className="w-4 h-4 text-blue-500" />
-                        <span>{activity.messages}</span>
-                      </div>
-                    </div>
-                  </div>
-                  <div className="text-sm text-gray-400">
-                    Connected with user {activity.partnerId}
-                  </div>
-                </div>
-              ))}
-            </div>
           ) : (
-            <p className="text-gray-400">No recent activity to show.</p>
+            <>
+              {/* Broadcast announcements from admins */}
+              <div className="mb-6">
+                <div className="flex items-center gap-2 mb-3">
+                  <Megaphone className="w-5 h-5 text-yellow-400" />
+                  <h3 className="text-lg font-semibold">Broadcast Messages</h3>
+                </div>
+                {announcements.length > 0 ? (
+                  <div className="space-y-3">
+                    {announcements.map((announcement) => (
+                      <div
+                        key={announcement.id}
+                        className="bg-zinc-800 rounded-lg p-4 border border-zinc-700"
+                      >
+                        <div className="flex items-center justify-between mb-1">
+                          <h4 className="font-semibold">{announcement.title}</h4>
+                          <span className="text-xs text-gray-400">
+                            {formatTimestamp(new Date(announcement.created_at))}
+                          </span>
+                        </div>
+                        <p className="text-sm text-gray-300">
+                          {announcement.message}
+                        </p>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="text-sm text-gray-400">
+                    No announcements from the SRM Connect team right now.
+                  </p>
+                )}
+              </div>
+
+              {/* User-specific recent activity */}
+              <div>
+                <div className="flex items-center gap-2 mb-3">
+                  <Clock className="w-5 h-5 text-gray-400" />
+                  <h3 className="text-lg font-semibold">Your Recent Sessions</h3>
+                </div>
+                {activities.length > 0 ? (
+                  <div className="space-y-4">
+                    {activities.map((activity) => (
+                      <div key={activity.id} className="bg-zinc-800 rounded-lg p-4">
+                        <div className="flex items-center justify-between mb-2">
+                          <span className="text-gray-400">
+                            {formatTimestamp(activity.timestamp)}
+                          </span>
+                          <div className="flex items-center gap-4">
+                            <div className="flex items-center gap-1">
+                              <Clock className="w-4 h-4 text-gray-400" />
+                              <span>{formatDuration(activity.duration)}</span>
+                            </div>
+                            <div className="flex items-center gap-1">
+                              <Heart className="w-4 h-4 text-red-500" />
+                              <span>{activity.likes}</span>
+                            </div>
+                            <div className="flex items-center gap-1">
+                              <MessageSquare className="w-4 h-4 text-blue-500" />
+                              <span>{activity.messages}</span>
+                            </div>
+                          </div>
+                        </div>
+                        <div className="text-sm text-gray-400">
+                          Connected with user {activity.partnerId}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="text-gray-400 text-sm">
+                    No recent activity to show yet. Start a video chat to see your past sessions here.
+                  </p>
+                )}
+              </div>
+            </>
           )}
         </div>
       </div>

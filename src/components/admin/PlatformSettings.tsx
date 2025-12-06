@@ -51,7 +51,6 @@ const PlatformSettings: React.FC = () => {
         if (error) throw error;
         
         if (data) {
-          setSettings(data as SystemSettings);
           setAllowRegistrations(data.allow_new_registrations);
           setAllowedDomains(data.allowed_email_domains || ['srmist.edu.in']);
           setMaintenanceMode(data.maintenance_mode);
