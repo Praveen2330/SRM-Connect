@@ -33,11 +33,19 @@ export interface AdminUser {
   user_id: string;
   role: AdminRole;
   created_at: string;
-  created_by?: string;
-  last_sign_in?: string;
-  profile?: {
-    id: string;
-    name?: string;
-    avatar_url?: string | null;
-  };
+  created_by?: string | null;      // can be null (matches your fallback object)
+  last_sign_in?: string | null;
+  profile?: UserProfile | null;    // joined profile may be missing
+}
+
+export interface UserProfile {
+  id: string;
+
+  // New main field from profiles table
+  full_name?: string | null;
+
+  // Backwards compatibility for any old code that still uses `name`
+  name?: string | null;
+
+  avatar_url?: string | null;
 }

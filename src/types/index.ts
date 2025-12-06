@@ -10,10 +10,17 @@ export interface AuthData {
   loading: boolean;
 }
 
+// Shared profile type used across the app
 export interface UserProfile {
   id: string;
-  name: string;
-  avatar_url?: string;
+
+  // New canonical display name from profiles table
+  full_name?: string | null;
+
+  // Backwards-compat: some places may still use `name`
+  name?: string | null;
+
+  avatar_url?: string | null;
 }
 
 export interface ChatMessage {
@@ -45,25 +52,42 @@ export interface AdminUser {
   user_id: string;
   role: AdminRole;
   created_at: string;
-  created_by?: string;
-  last_sign_in?: string;
-  profile?: UserProfile;
+  created_by?: string | null;      // allow null (matches DB + code)
+  last_sign_in?: string | null;
+  profile?: UserProfile | null;    // joined profile with full_name/avatar_url
 }
 
+/**
+ * Unified UserReport type (merges both previous definitions)
+ */
 export interface UserReport {
   id: string;
   reporter_id: string;
   reported_user_id: string;
+
+  // Optional chat session linkage
   chat_session_id?: string;
-  reported_at: string;
+
   reason: string;
+  reported_at: string;
+
+  // Optional extra metadata
   description?: string | null;
-  transcript?: any[];
+  transcript?: any[];              // raw chat / video transcript
+  action_taken?: string | null;
+
+  // Admin workflow fields
   status: 'pending' | 'in_review' | 'resolved' | 'dismissed';
   reviewed_by?: string | null;
   reviewed_at?: string | null;
   admin_notes?: string | null;
-  action_taken?: string | null;
+  resolved_at?: string | null;
+
+  // Auditing fields (may not always be present on older rows)
+  created_at?: string;
+  updated_at?: string;
+
+  // Joined profile info
   reporter?: UserProfile;
   reported_user?: UserProfile;
 }
@@ -76,7 +100,12 @@ export interface ChatReport {
   description?: string | null;
   timestamp: string;
   chatTranscript?: any[];
-  status: 'pending' | 'reviewed' | 'ignored' | 'warning_issued' | 'user_banned';
+  status:
+    | 'pending'
+    | 'reviewed'
+    | 'ignored'
+    | 'warning_issued'
+    | 'user_banned';
   admin_notes?: string | null;
   reviewer_id?: string | null;
   reviewed_at?: string | null;
@@ -89,21 +118,6 @@ export interface ExtendedUserProfile extends UserProfile {
   gender?: string;
   status?: 'active' | 'suspended' | 'deleted';
   user_metadata?: any;
-}
-
-export interface UserReport {
-  id: string;
-  reporter_id: string;
-  reported_user_id: string;
-  reason: string;
-  reported_at: string;
-  status: 'pending' | 'in_review' | 'resolved' | 'dismissed';
-  resolved_at?: string;
-  admin_notes?: string;
-  created_at: string;
-  updated_at: string;
-  reporter?: UserProfile;
-  reported_user?: UserProfile;
 }
 
 export interface VideoSession {
@@ -137,9 +151,10 @@ export interface SystemAnnouncement {
   title: string;
   message: string;
   created_at: string;
-  expires_at?: string;
-  created_by?: string;
-  target_users: 'all' | 'male' | 'female' | string;
+  expires_at?: string | null;
+  created_by?: string | null;
+  // now supports 'any' plus free-form string fallback
+  target_users: 'all' | 'any' | 'male' | 'female' | string;
   is_active: boolean;
 }
 
