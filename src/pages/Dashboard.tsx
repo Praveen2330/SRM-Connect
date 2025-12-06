@@ -1,6 +1,15 @@
-import React, { useEffect, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { Camera, MessageCircle, User, Settings, Clock, Heart, MessageSquare, Megaphone } from 'lucide-react';
+import {
+  Camera,
+  MessageCircle,
+  User,
+  Settings,
+  Clock,
+  Heart,
+  MessageSquare,
+  Megaphone,
+} from 'lucide-react';
 import { supabase } from '../lib/supabase';
 import { RecentActivity } from '../types/activity';
 
@@ -10,140 +19,173 @@ interface SystemAnnouncement {
   message: string;
   created_at: string;
   expires_at?: string | null;
-  target_users?: string | null;
+  target_users?: string | null; // 'all' | 'any' | 'male' | 'female'
   is_active?: boolean | null;
 }
 
 function formatDuration(seconds: number): string {
+  if (!seconds || seconds < 0) return '0s';
   if (seconds < 60) return `${seconds}s`;
+
   const minutes = Math.floor(seconds / 60);
   const remainingSeconds = seconds % 60;
   return `${minutes}m ${remainingSeconds}s`;
 }
 
-function formatTimestamp(date: Date): string {
+function formatTimestamp(date: Date | string): string {
   return new Date(date).toLocaleString();
 }
 
 function Dashboard() {
   const navigate = useNavigate();
+
   const [activities, setActivities] = useState<RecentActivity[]>([]);
   const [announcements, setAnnouncements] = useState<SystemAnnouncement[]>([]);
   const [loading, setLoading] = useState(true);
   const [isAdmin, setIsAdmin] = useState(false);
-  const [currentUserId, setCurrentUserId] = useState<string | null>(null);
 
   useEffect(() => {
-    const fetchActivities = async () => {
+    const fetchData = async () => {
       try {
-        const { data: { user } } = await supabase.auth.getUser();
+        const {
+          data: { user },
+        } = await supabase.auth.getUser();
+
         if (!user) {
           console.error('No authenticated user found');
           return;
         }
-        
-        // Store user ID for admin check
-        setCurrentUserId(user.id);
-        
-        // Check if this is the specific admin user
+
+        // Simple admin flag based on fixed user id
         if (user.id === 'e1f9caeb-ae74-41af-984a-b44230ac7491') {
           setIsAdmin(true);
         }
 
-        // Get all activities for the user
-        const { data, error } = await supabase
+        // ---- Fetch user gender from profiles table ----
+        let userGender: string | null = null;
+        try {
+          const { data: profileRow, error: profileError } = await supabase
+            .from('profiles')
+            .select('gender')
+            .eq('id', user.id)
+            .single();
+
+          if (!profileError && profileRow && (profileRow as any).gender) {
+            userGender = ((profileRow as any).gender as string).toLowerCase();
+          }
+        } catch (profileErr) {
+          console.error('Error fetching profile gender:', profileErr);
+        }
+
+        // ---- Recent activities ----
+        const { data: activityRows, error: activityError } = await supabase
           .from('recent_activities')
           .select('*')
           .eq('user_id', user.id)
           .order('created_at', { ascending: false });
 
-        if (error) {
-          console.error('Error fetching activities:', error);
-          return;
-        }
+        if (activityError) {
+          console.error('Error fetching activities:', activityError);
+        } else {
+          let rows = activityRows;
 
-        // If no activities exist, create an empty record
-        let activities = data;
-        if (!activities || activities.length === 0) {
-          const { data: newData, error: insertError } = await supabase
-            .from('recent_activities')
-            .insert([
-              { 
-                user_id: user.id,
-                activities: [],
-                created_at: new Date().toISOString()
-              }
-            ])
-            .select()
-            .single();
+          // If no activities row exists, create an empty one
+          if (!rows || rows.length === 0) {
+            const {
+              data: newRow,
+              error: insertError,
+            } = await supabase
+              .from('recent_activities')
+              .insert([
+                {
+                  user_id: user.id,
+                  activities: [],
+                  created_at: new Date().toISOString(),
+                },
+              ])
+              .select()
+              .single();
 
-          if (insertError) {
-            console.error('Error creating activities record:', insertError);
-            return;
+            if (insertError) {
+              console.error('Error creating activities record:', insertError);
+            } else if (newRow) {
+              rows = [newRow];
+            }
           }
-          
-          activities = [newData];
+
+          if (rows && rows.length > 0) {
+            const allActivities = rows.reduce(
+              (acc: RecentActivity[], record: any) => {
+                const recordActivities = Array.isArray(record.activities)
+                  ? (record.activities as RecentActivity[])
+                  : [];
+                return [...acc, ...recordActivities];
+              },
+              [],
+            );
+
+            const sortedActivities = allActivities
+              .map((activity: RecentActivity) => ({
+                ...activity,
+                timestamp: new Date(activity.timestamp as any),
+              }))
+              .sort(
+                (a: RecentActivity, b: RecentActivity) =>
+                  new Date(b.timestamp as any).getTime() -
+                  new Date(a.timestamp as any).getTime(),
+              )
+              .slice(0, 10);
+
+            setActivities(sortedActivities);
+          }
         }
 
-        // Process all activities
-        const allActivities = activities.reduce((acc, record) => {
-          const recordActivities = Array.isArray(record.activities) ? record.activities : [];
-          return [...acc, ...recordActivities];
-        }, [] as RecentActivity[]);
-
-        // Sort activities by timestamp and take the most recent 10
-        const sortedActivities = allActivities
-          .map((activity: RecentActivity) => ({
-            ...activity,
-            timestamp: new Date(activity.timestamp)
-          }))
-          .sort((a: RecentActivity, b: RecentActivity) => 
-            new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()
-          )
-          .slice(0, 10);
-
-        setActivities(sortedActivities);
-
-        // Fetch active broadcast announcements for all users
-        const { data: announcementData, error: announcementError } = await supabase
-          .from('system_announcements')
-          .select('*')
-          .eq('is_active', true)
-          .order('created_at', { ascending: false });
+        // ---- Broadcast announcements ----
+        const { data: announcementData, error: announcementError } =
+          await supabase
+            .from('system_announcements')
+            .select('*')
+            .eq('is_active', true)
+            .order('created_at', { ascending: false });
 
         if (announcementError) {
           console.error('Error fetching announcements:', announcementError);
         } else if (announcementData) {
           const now = new Date();
-          const visibleAnnouncements = announcementData.filter((a: SystemAnnouncement) => {
-            const notExpired = !a.expires_at || new Date(a.expires_at) >= now;
 
-            const userGender = profile?.gender?.toLowerCase() || null;
-            const target = a.target_users?.toLowerCase() || 'all'; // all, male, female, any
+          const visibleAnnouncements = announcementData.filter(
+            (a: SystemAnnouncement) => {
+              const notExpired =
+                !a.expires_at || new Date(a.expires_at) >= now;
 
-            let matchesTarget = true;
+              const target =
+                a.target_users?.toLowerCase() || 'all'; // 'all', 'any', 'male', 'female'
+              let matchesTarget = true;
 
-            if (target === 'all' || target === 'any') {
-              // show to everyone
-              matchesTarget = true;
-            } else if (target === 'male') {
-              matchesTarget = userGender === 'male';
-            } else if (target === 'female') {
-              matchesTarget = userGender === 'female';
-            }
+              if (target === 'all' || target === 'any') {
+                // show to everyone
+                matchesTarget = true;
+              } else if (target === 'male') {
+                matchesTarget = userGender === 'male';
+              } else if (target === 'female') {
+                matchesTarget = userGender === 'female';
+              }
 
-            return notExpired && matchesTarget;
-          });
+              return notExpired && matchesTarget;
+            },
+          );
+
           setAnnouncements(visibleAnnouncements);
         }
-      } catch (error) {
-        console.error('Error in fetchActivities:', error);
+      } catch (err) {
+        console.error('Error in Dashboard fetchData:', err);
       } finally {
         setLoading(false);
       }
     };
 
-    fetchActivities();
+    fetchData();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const handleFindMatch = () => {
@@ -153,29 +195,41 @@ function Dashboard() {
   return (
     <div className="min-h-screen bg-black text-white p-8">
       <div className="max-w-6xl mx-auto">
+        {/* Header */}
         <div className="flex justify-between items-center mb-12">
           <h1 className="text-4xl font-bold">Dashboard</h1>
           <div className="flex items-center gap-4">
             {isAdmin && (
-              <Link to="/admin" className="flex items-center gap-2 bg-indigo-900 p-2 rounded-lg hover:bg-indigo-800 transition-colors">
-                <span className="bg-red-600 text-xs px-2 py-0.5 rounded">ADMIN</span>
+              <Link
+                to="/admin"
+                className="flex items-center gap-2 bg-indigo-900 p-2 rounded-lg hover:bg-indigo-800 transition-colors"
+              >
+                <span className="bg-red-600 text-xs px-2 py-0.5 rounded">
+                  ADMIN
+                </span>
                 <span>Admin Panel</span>
               </Link>
             )}
-            <Link to="/settings" className="flex items-center gap-2 bg-zinc-900 p-2 rounded-lg">
+            <Link
+              to="/settings"
+              className="flex items-center gap-2 bg-zinc-900 p-2 rounded-lg"
+            >
               <Settings className="w-5 h-5" />
               <span>Settings</span>
             </Link>
           </div>
         </div>
 
+        {/* Top cards */}
         <div className="grid grid-cols-1 md:grid-cols-3 gap-8 mb-12">
           <div className="bg-zinc-900 p-6 rounded-xl">
             <div className="flex flex-col items-center">
               <Camera className="w-8 h-8 mb-4" />
               <h2 className="text-xl font-bold mb-2">Start Video Chat</h2>
-              <p className="text-gray-400 text-center mb-4">Connect with someone new through video chat</p>
-              <button 
+              <p className="text-gray-400 text-center mb-4">
+                Connect with someone new through video chat
+              </p>
+              <button
                 onClick={handleFindMatch}
                 className="w-full bg-white text-black py-2 rounded-lg font-semibold hover:bg-gray-100 transition-colors"
               >
@@ -188,9 +242,11 @@ function Dashboard() {
             <div className="flex flex-col items-center">
               <MessageCircle className="w-8 h-8 mb-4" />
               <h2 className="text-xl font-bold mb-2">Instant Chat</h2>
-              <p className="text-gray-400 text-center mb-4">Chat with other users instantly</p>
-              <Link 
-                to="/instant-chat" 
+              <p className="text-gray-400 text-center mb-4">
+                Chat with other users instantly
+              </p>
+              <Link
+                to="/instant-chat"
                 className="w-full bg-zinc-900 border border-white py-2 rounded-lg font-semibold text-center hover:bg-zinc-800 transition-colors"
               >
                 Open Chat
@@ -202,9 +258,11 @@ function Dashboard() {
             <div className="flex flex-col items-center">
               <User className="w-8 h-8 mb-4" />
               <h2 className="text-xl font-bold mb-2">Your Profile</h2>
-              <p className="text-gray-400 text-center mb-4">Update your profile and preferences</p>
-              <Link 
-                to="/profile" 
+              <p className="text-gray-400 text-center mb-4">
+                Update your profile and preferences
+              </p>
+              <Link
+                to="/profile"
                 className="w-full bg-zinc-900 border border-white py-2 rounded-lg font-semibold text-center hover:bg-zinc-800 transition-colors"
               >
                 Edit Profile
@@ -213,12 +271,13 @@ function Dashboard() {
           </div>
         </div>
 
+        {/* Announcements & Activity */}
         <div className="bg-zinc-900 rounded-xl p-8">
           <h2 className="text-2xl font-bold mb-6">Announcements & Activity</h2>
 
           {loading ? (
             <div className="flex items-center justify-center py-8">
-              <div className="animate-spin rounded-full h-8 w-8 border-2 border-blue-500 border-t-transparent"></div>
+              <div className="animate-spin rounded-full h-8 w-8 border-2 border-blue-500 border-t-transparent" />
             </div>
           ) : (
             <>
@@ -236,9 +295,11 @@ function Dashboard() {
                         className="bg-zinc-800 rounded-lg p-4 border border-zinc-700"
                       >
                         <div className="flex items-center justify-between mb-1">
-                          <h4 className="font-semibold">{announcement.title}</h4>
+                          <h4 className="font-semibold">
+                            {announcement.title}
+                          </h4>
                           <span className="text-xs text-gray-400">
-                            {formatTimestamp(new Date(announcement.created_at))}
+                            {formatTimestamp(announcement.created_at)}
                           </span>
                         </div>
                         <p className="text-sm text-gray-300">
@@ -262,16 +323,21 @@ function Dashboard() {
                 </div>
                 {activities.length > 0 ? (
                   <div className="space-y-4">
-                    {activities.map((activity) => (
-                      <div key={activity.id} className="bg-zinc-800 rounded-lg p-4">
+                    {activities.map((activity: RecentActivity) => (
+                      <div
+                        key={activity.id}
+                        className="bg-zinc-800 rounded-lg p-4"
+                      >
                         <div className="flex items-center justify-between mb-2">
                           <span className="text-gray-400">
-                            {formatTimestamp(activity.timestamp)}
+                            {formatTimestamp(activity.timestamp as any)}
                           </span>
                           <div className="flex items-center gap-4">
                             <div className="flex items-center gap-1">
                               <Clock className="w-4 h-4 text-gray-400" />
-                              <span>{formatDuration(activity.duration)}</span>
+                              <span>
+                                {formatDuration(activity.duration as any)}
+                              </span>
                             </div>
                             <div className="flex items-center gap-1">
                               <Heart className="w-4 h-4 text-red-500" />
@@ -291,7 +357,8 @@ function Dashboard() {
                   </div>
                 ) : (
                   <p className="text-gray-400 text-sm">
-                    No recent activity to show yet. Start a video chat to see your past sessions here.
+                    No recent activity to show yet. Start a video chat to see
+                    your past sessions here.
                   </p>
                 )}
               </div>
