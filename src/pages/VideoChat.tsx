@@ -272,7 +272,9 @@ const VideoChat = (): JSX.Element => {
     }
   
     if (!partnerProfile) {
-      setReportError('Could not find the user you are trying to report. Please try again while in an active call.');
+      setReportError(
+        'Could not find the user you are trying to report. Please try again while in an active call.'
+      );
       return;
     }
   
@@ -286,38 +288,37 @@ const VideoChat = (): JSX.Element => {
     try {
       const reportTimestamp = new Date().toISOString();
   
-      // Build structured JSON context for Supabase JSONB column
+      const reporterDisplayName =
+        user.user_metadata?.display_name || user.email || 'Unknown User';
+  
+      const reportedDisplayName =
+        partnerProfile.display_name ||
+        partnerProfile.name ||
+        partnerProfile.email ||
+        'Unknown User';
+  
       const reportContext = {
-        session_start_time: new Date(
-          isCalling ? Date.now() - 600000 : Date.now()
-        ).toISOString(),
+        session_start_time: sessionStartTimeRef.current,
         report_location: 'video_chat',
         client_timestamp: reportTimestamp,
+        reporter_display_name: reporterDisplayName,
+        reported_display_name: reportedDisplayName,
       };
   
-      // Build report insert payload
-      const reportData = {
+      const reportData: any = {
         reporter_id: user.id,
         reported_user_id: partnerProfile.id,
-        reason: reportReason,
+        reason: reportReason.trim(),
+        details: reportReason.trim(),
         reported_at: reportTimestamp,
-        status: 'pending',
-        report_type: 'video_chat',
-        reporter_email: user.email,
-        reporter_display_name: user.user_metadata?.display_name || 'Anonymous',
-        reported_user_email: partnerProfile.email || 'Unknown',
-        reported_user_display_name:
-          partnerProfile.display_name || partnerProfile.name || 'Unknown',
-        context: reportContext, // JSONB — not stringified
+        created_at: reportTimestamp,
+        context: reportContext,
+        // chat_session_id: null, // ← leave this out for now to avoid FK errors
       };
-  
-      console.log('Submitting report to Supabase:', reportData);
-  
+
       const { error } = await supabase.from('user_reports').insert([reportData]);
-  
       if (error) throw error;
   
-      // If success → show success UI
       setReportSuccess(true);
       setTimeout(() => {
         setIsReporting(false);
@@ -333,7 +334,6 @@ const VideoChat = (): JSX.Element => {
       setIsReportSubmitting(false);
     }
   };
-
   useEffect(() => {
     // Add tab visibility handler for reconnect logic
     const handleVisibilityChange = () => {

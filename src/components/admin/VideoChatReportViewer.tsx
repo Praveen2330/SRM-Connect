@@ -8,7 +8,11 @@ interface VideoChatReport {
   reported_user_id: string;
   reason: string;
   created_at: string;
+  reported_at?: string;
   status: 'pending' | 'in_review' | 'resolved' | 'dismissed';
+  // new optional fields for names
+  reporter_name?: string;
+  reported_user_name?: string;
 }
 
 interface VideoChatReportViewerProps {
@@ -17,7 +21,11 @@ interface VideoChatReportViewerProps {
   showFilters?: boolean;
 }
 
-const VideoChatReportViewer: React.FC<VideoChatReportViewerProps> = ({ canManage, updateCount, showFilters = true }) => {
+const VideoChatReportViewer: React.FC<VideoChatReportViewerProps> = ({
+  canManage,
+  updateCount,
+  showFilters = true,
+}) => {
   const [reports, setReports] = useState<VideoChatReport[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -28,62 +36,94 @@ const VideoChatReportViewer: React.FC<VideoChatReportViewerProps> = ({ canManage
 
   useEffect(() => {
     fetchReports();
-    
   }, [filterStatus]);
 
   useEffect(() => {
     if (updateCount) {
-      const pendingReports = reports.filter(report => report.status === 'pending').length;
+      const pendingReports = reports.filter((report) => report.status === 'pending').length;
       updateCount(pendingReports);
     }
-  }, [reports]);
+  }, [reports, updateCount]);
 
   const fetchReports = async () => {
     setLoading(true);
     setError(null);
-    
+
     try {
-      let query = supabase
+      // 1) Get all reports (no joins here)
+      const { data, error } = await supabase
         .from('user_reports')
-        .select('*');
-      
-      if (filterStatus !== 'all') {
-        query = query.eq('status', filterStatus);
-      }
-      
-      query = query.order('created_at', { ascending: false });
-      
-      const { data, error } = await query;
-      
+        .select('*')
+        .order('reported_at', { ascending: false });
+
       if (error) throw error;
-      
-      setReports(data || []);
+      if (!data) {
+        setReports([]);
+        return;
+      }
+
+      // 2) Collect unique user IDs (reporter + reported user)
+      const userIds = Array.from(
+        new Set(
+          data
+            .flatMap((r: any) => [r.reporter_id, r.reported_user_id])
+            .filter((id): id is string => Boolean(id))
+        )
+      );
+
+      // 3) Build a map of id -> display_name from profiles table
+      const nameMap = new Map<string, string>();
+
+      if (userIds.length > 0) {
+        const { data: profiles, error: profilesError } = await supabase
+          .from('profiles')
+          .select('id, display_name');
+
+        if (!profilesError && profiles) {
+          profiles.forEach((p: any) => {
+            nameMap.set(p.id, p.display_name || 'Unknown User');
+          });
+        }
+      }
+
+      // 4) Attach names onto each report
+      const reportsWithNames: VideoChatReport[] = data.map((r: any) => ({
+        ...r,
+        reporter_name: nameMap.get(r.reporter_id) || 'Unknown User',
+        reported_user_name: nameMap.get(r.reported_user_id) || 'Unknown User',
+      }));
+
+      setReports(reportsWithNames);
+
+      if (updateCount) {
+        updateCount(reportsWithNames.length);
+      }
     } catch (err) {
-      console.error('Error fetching video chat reports:', err);
-      setError('Failed to load reports. Please try again.');
+      console.error('Error fetching reports:', err);
+      setError((err as Error).message);
     } finally {
       setLoading(false);
     }
   };
 
-  const handleReportAction = async (reportId: string, status: 'in_review' | 'resolved' | 'dismissed') => {
+  const handleReportAction = async (
+    reportId: string,
+    status: 'in_review' | 'resolved' | 'dismissed'
+  ) => {
     if (!canManage) return;
-    
+
     setActionInProgress(true);
     try {
-      const updates = {
-        status
-      };
-      
+      const updates = { status };
+
       const { error } = await supabase
         .from('user_reports')
         .update(updates)
         .eq('id', reportId);
-      
+
       if (error) throw error;
-      
-      
-      fetchReports();
+
+      await fetchReports();
       setSelectedReport(null);
     } catch (err) {
       console.error('Error updating report:', err);
@@ -94,12 +134,14 @@ const VideoChatReportViewer: React.FC<VideoChatReportViewerProps> = ({ canManage
   };
 
   const formatDate = (dateString: string) => {
+    if (!dateString) return '—';
     return new Date(dateString).toLocaleString();
   };
 
-  const filteredReports = filterStatus === 'all'
-    ? reports
-    : reports.filter(report => report.status === filterStatus);
+  const filteredReports =
+    filterStatus === 'all'
+      ? reports
+      : reports.filter((report) => report.status === filterStatus);
 
   return (
     <div className="space-y-6">
@@ -162,22 +204,35 @@ const VideoChatReportViewer: React.FC<VideoChatReportViewerProps> = ({ canManage
               <div className="flex justify-between items-start">
                 <div>
                   <div className="flex items-center space-x-2">
-                    <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${
-                      report.status === 'pending' ? 'bg-yellow-900 text-yellow-300' :
-                      report.status === 'in_review' ? 'bg-blue-900 text-blue-300' :
-                      report.status === 'resolved' ? 'bg-green-900 text-green-300' :
-                      'bg-gray-700 text-gray-300'
-                    }`}>
+                    <span
+                      className={`px-2 py-0.5 rounded-full text-xs font-medium ${
+                        report.status === 'pending'
+                          ? 'bg-yellow-900 text-yellow-300'
+                          : report.status === 'in_review'
+                          ? 'bg-blue-900 text-blue-300'
+                          : report.status === 'resolved'
+                          ? 'bg-green-900 text-green-300'
+                          : 'bg-gray-700 text-gray-300'
+                      }`}
+                    >
                       {report.status.replace('_', ' ')}
                     </span>
                     <span className="text-gray-400 text-sm">
-                      {formatDate(report.created_at)}
+                      {formatDate(report.reported_at || report.created_at)}
                     </span>
                   </div>
                   <h3 className="font-medium mt-1">Reason: {report.reason}</h3>
-                  <div className="mt-2 text-sm">
-                    <div><span className="text-gray-400">Reporter:</span> {report.reporter_id}</div>
-                    <div><span className="text-gray-400">Reported User:</span> {report.reported_user_id}</div>
+                  <div className="mt-2 text-sm space-y-1">
+                    <div>
+                      <span className="text-gray-400">Reporter: </span>
+                      {report.reporter_name || 'Unknown User'}{' '}
+                      <span className="text-xs text-gray-500">({report.reporter_id})</span>
+                    </div>
+                    <div>
+                      <span className="text-gray-400">Reported User: </span>
+                      {report.reported_user_name || 'Unknown User'}{' '}
+                      <span className="text-xs text-gray-500">({report.reported_user_id})</span>
+                    </div>
                   </div>
                 </div>
               </div>
@@ -198,47 +253,62 @@ const VideoChatReportViewer: React.FC<VideoChatReportViewerProps> = ({ canManage
                 <XCircle size={20} />
               </button>
             </div>
-            
+
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6">
+              {/* Reporter */}
               <div>
                 <h5 className="text-sm font-medium text-gray-400 mb-2">Reporter</h5>
                 <div className="bg-gray-800 rounded p-4">
-                  <div className="text-sm">
-                    <div className="text-xs text-gray-500">User ID</div>
-                    <div>{selectedReport.reporter_id}</div>
+                  <div className="text-sm mb-1 font-semibold">
+                    {selectedReport.reporter_name || 'Unknown User'}
+                  </div>
+                  <div className="text-xs text-gray-500 break-all">
+                    ID: {selectedReport.reporter_id}
                   </div>
                 </div>
               </div>
-              
+
+              {/* Reported User */}
               <div>
                 <h5 className="text-sm font-medium text-gray-400 mb-2">Reported User</h5>
                 <div className="bg-gray-800 rounded p-4">
-                  <div className="text-sm">
-                    <div className="text-xs text-gray-500">User ID</div>
-                    <div>{selectedReport.reported_user_id}</div>
+                  <div className="text-sm mb-1 font-semibold">
+                    {selectedReport.reported_user_name || 'Unknown User'}
+                  </div>
+                  <div className="text-xs text-gray-500 break-all">
+                    ID: {selectedReport.reported_user_id}
                   </div>
                 </div>
               </div>
-              
+
+              {/* Details */}
               <div className="md:col-span-2">
                 <h5 className="text-sm font-medium text-gray-400 mb-2">Report Details</h5>
                 <div className="bg-gray-800 rounded p-4">
                   <div className="mb-3">
                     <div className="text-xs text-gray-500">Report ID</div>
-                    <div className="text-sm">{selectedReport.id}</div>
+                    <div className="text-sm break-all">{selectedReport.id}</div>
                   </div>
                   <div className="mb-3">
                     <div className="text-xs text-gray-500">Submitted At</div>
-                    <div className="text-sm">{formatDate(selectedReport.created_at)}</div>
+                    <div className="text-sm">
+                      {formatDate(selectedReport.reported_at || selectedReport.created_at)}
+                    </div>
                   </div>
                   <div className="mb-3">
                     <div className="text-xs text-gray-500">Current Status</div>
                     <div className="text-sm">
-                      <span className={`px-2 inline-flex text-xs leading-5 font-semibold rounded-full
-                        ${selectedReport.status === 'pending' ? 'bg-yellow-900 text-yellow-300' : 
-                          selectedReport.status === 'in_review' ? 'bg-blue-900 text-blue-300' : 
-                          selectedReport.status === 'resolved' ? 'bg-green-900 text-green-300' : 
-                          'bg-gray-700 text-gray-300'}`}
+                      <span
+                        className={`px-2 inline-flex text-xs leading-5 font-semibold rounded-full
+                        ${
+                          selectedReport.status === 'pending'
+                            ? 'bg-yellow-900 text-yellow-300'
+                            : selectedReport.status === 'in_review'
+                            ? 'bg-blue-900 text-blue-300'
+                            : selectedReport.status === 'resolved'
+                            ? 'bg-green-900 text-green-300'
+                            : 'bg-gray-700 text-gray-300'
+                        }`}
                       >
                         {selectedReport.status.replace('_', ' ')}
                       </span>
@@ -246,12 +316,14 @@ const VideoChatReportViewer: React.FC<VideoChatReportViewerProps> = ({ canManage
                   </div>
                   <div>
                     <div className="text-xs text-gray-500">Reason</div>
-                    <div className="text-sm bg-gray-900 p-3 rounded mt-1">{selectedReport.reason}</div>
+                    <div className="text-sm bg-gray-900 p-3 rounded mt-1">
+                      {selectedReport.reason}
+                    </div>
                   </div>
                 </div>
               </div>
             </div>
-            
+
             {canManage && (
               <div className="mb-6">
                 <h5 className="text-sm font-medium text-gray-400 mb-2">Admin Notes</h5>
@@ -264,7 +336,7 @@ const VideoChatReportViewer: React.FC<VideoChatReportViewerProps> = ({ canManage
                 />
               </div>
             )}
-            
+
             <div className="flex justify-end space-x-3 pt-4 border-t border-gray-800">
               {canManage && selectedReport.status === 'pending' && (
                 <>
@@ -276,7 +348,7 @@ const VideoChatReportViewer: React.FC<VideoChatReportViewerProps> = ({ canManage
                     <CheckCircle size={16} className="mr-2" />
                     {actionInProgress ? 'Processing...' : 'Mark as In Review'}
                   </button>
-                  
+
                   <button
                     onClick={() => handleReportAction(selectedReport.id, 'resolved')}
                     className="px-4 py-2 bg-green-800 hover:bg-green-700 rounded flex items-center"
@@ -285,7 +357,7 @@ const VideoChatReportViewer: React.FC<VideoChatReportViewerProps> = ({ canManage
                     <CheckCircle size={16} className="mr-2" />
                     {actionInProgress ? 'Processing...' : 'Resolve Report'}
                   </button>
-                  
+
                   <button
                     onClick={() => handleReportAction(selectedReport.id, 'dismissed')}
                     className="px-4 py-2 bg-gray-700 hover:bg-gray-600 rounded flex items-center"
