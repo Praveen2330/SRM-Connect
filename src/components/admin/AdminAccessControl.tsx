@@ -31,7 +31,7 @@ const AdminAccessControl: React.FC = () => {
           .from('admin_users')
           .select(`
             *,
-            profile:user_id(id, full_name, avatar_url)
+            profile:user_id(id, full_name:display_name, avatar_url)
           `)
           .order('created_at', { ascending: false });
         
