@@ -28,8 +28,8 @@ const VideoSessionLogs: React.FC = () => {
     if (searchTerm) {
       const term = searchTerm.toLowerCase();
       filtered = filtered.filter(session => 
-        session.user1?.name?.toLowerCase().includes(term) || 
-        session.user2?.name?.toLowerCase().includes(term) ||
+        session.user1?.full_name?.toLowerCase().includes(term) || 
+        session.user2?.full_name?.toLowerCase().includes(term) ||
         session.id.toLowerCase().includes(term)
       );
     }
@@ -80,8 +80,8 @@ const VideoSessionLogs: React.FC = () => {
         .from('video_sessions')
         .select(`
           *,
-          user1:user1_id(id, name, avatar_url),
-          user2:user2_id(id, name, avatar_url)
+          user1:user1_id(id, full_name, avatar_url),
+          user2:user2_id(id, full_name, avatar_url)
         `)
         .order(sortBy, { ascending: sortDirection === 'asc' })
         .range((page - 1) * sessionsPerPage, page * sessionsPerPage - 1);
@@ -354,19 +354,19 @@ const VideoSessionLogs: React.FC = () => {
                             <img 
                               className="h-8 w-8 rounded-full object-cover" 
                               src={session.user1.avatar_url} 
-                              alt={session.user1?.name || 'User 1'} 
+                              alt={session.user1?.full_name || 'User 1'} 
                             />
                           ) : (
                             <div className="h-8 w-8 rounded-full bg-gray-700 flex items-center justify-center">
                               <span className="text-sm text-gray-300">
-                                {(session.user1?.name || 'U').charAt(0).toUpperCase()}
+                                {(session.user1?.full_name || 'U').charAt(0).toUpperCase()}
                               </span>
                             </div>
                           )}
                         </div>
                         <div className="ml-2">
                           <div className="text-sm font-medium text-white">
-                            {session.user1?.name || 'Unknown User'}
+                            {session.user1?.full_name || 'Unknown User'}
                           </div>
                         </div>
                       </div>
@@ -383,19 +383,19 @@ const VideoSessionLogs: React.FC = () => {
                             <img 
                               className="h-8 w-8 rounded-full object-cover" 
                               src={session.user2.avatar_url} 
-                              alt={session.user2?.name || 'User 2'} 
+                              alt={session.user2?.full_name || 'User 2'} 
                             />
                           ) : (
                             <div className="h-8 w-8 rounded-full bg-gray-700 flex items-center justify-center">
                               <span className="text-sm text-gray-300">
-                                {(session.user2?.name || 'U').charAt(0).toUpperCase()}
+                                {(session.user2?.full_name || 'U').charAt(0).toUpperCase()}
                               </span>
                             </div>
                           )}
                         </div>
                         <div className="ml-2">
                           <div className="text-sm font-medium text-white">
-                            {session.user2?.name || 'Unknown User'}
+                            {session.user2?.full_name || 'Unknown User'}
                           </div>
                         </div>
                       </div>
