@@ -93,7 +93,9 @@ const VideoChat = (): JSX.Element => {
   const remoteVideoRef = useRef<HTMLVideoElement | null>(null);
   const localVideoRef = useRef<HTMLVideoElement | null>(null);
   const mountTimeRef = useRef<number>(Date.now()); // Track when component mounted
-
+  const sessionIdRef = useRef<string | null>(null);
+  const sessionStartTimeRef = useRef<string | null>(null);
+  
   const [socket, setSocket] = useState<SocketType | null>(null);
   const [localStream, setLocalStream] = useState<MediaStream | null>(null);
   const [remoteStream, setRemoteStream] = useState<MediaStream | null>(null);
@@ -143,7 +145,7 @@ const VideoChat = (): JSX.Element => {
 
   const cleanupCall = useCallback(() => {
     console.log('Cleaning up call resources');
-
+  
     // Stop all local tracks
     if (localStreamRef.current) {
       localStreamRef.current.getTracks().forEach((track: MediaStreamTrack) => {
@@ -152,18 +154,15 @@ const VideoChat = (): JSX.Element => {
       });
       localStreamRef.current = null;
     }
-
+  
     // Close peer connection
     if (peerConnectionRef.current) {
       try {
-        // Remove all event listeners
         const pc = peerConnectionRef.current;
         pc.ontrack = null;
         pc.onicecandidate = null;
         pc.oniceconnectionstatechange = null;
         pc.onconnectionstatechange = null;
-
-        // Close the connection
         pc.close();
         console.log('Peer connection closed');
       } catch (err) {
@@ -171,15 +170,15 @@ const VideoChat = (): JSX.Element => {
       }
       peerConnectionRef.current = null;
     }
-
+  
     // Clear any buffered remote media
     remoteMediaStreamRef.current = null;
-
+  
     // Clear remote video element srcObject if present
     if (remoteVideoRef.current) {
       remoteVideoRef.current.srcObject = null;
     }
-
+  
     // Reset state
     setLocalStream(null);
     setRemoteStream(null);
@@ -189,11 +188,50 @@ const VideoChat = (): JSX.Element => {
     setIsMicMuted(false);
     setIsVideoMuted(false);
   }, []);
-
+  
+  const endVideoSession = useCallback(async () => {
+    if (!sessionIdRef.current) return;
+  
+    try {
+      const endedAt = new Date().toISOString();
+      let durationSeconds: number | null = null;
+  
+      if (sessionStartTimeRef.current) {
+        const start = Date.parse(sessionStartTimeRef.current);
+        const end = Date.parse(endedAt);
+        if (!isNaN(start) && !isNaN(end)) {
+          durationSeconds = Math.max(0, Math.floor((end - start) / 1000));
+        }
+      }
+  
+      const { error } = await supabase
+        .from('video_sessions')
+        .update({
+          ended_at: endedAt,
+          duration_seconds: durationSeconds,
+        })
+        .eq('id', sessionIdRef.current);
+  
+      if (error) throw error;
+  
+      console.log('Logged video session end:', {
+        sessionId: sessionIdRef.current,
+        endedAt,
+        durationSeconds,
+      });
+    } catch (err) {
+      console.error('Error logging video session end:', err);
+    } finally {
+      sessionIdRef.current = null;
+      sessionStartTimeRef.current = null;
+    }
+  }, []);
+  
   const handleEndCall = () => {
     if (socketRef.current) {
       socketRef.current.emit('end-call');
     }
+    endVideoSession();
     cleanupCall();
   };
 
@@ -955,7 +993,7 @@ const VideoChat = (): JSX.Element => {
       }
     };
 
-    const handleMatchFound = (data: {
+    const handleMatchFound = async (data: {
       partnerId: string;
       isInitiator: boolean;
       partnerProfile: UserProfile;
@@ -963,7 +1001,42 @@ const VideoChat = (): JSX.Element => {
       setIsMatching(false);
       setIsCalling(true);
       setPartnerProfile(data.partnerProfile);
-
+    
+      // Only initiator logs the session row to avoid duplicates
+      if (user && data.isInitiator) {
+        const startedAt = new Date().toISOString();
+        sessionStartTimeRef.current = startedAt;
+    
+        try {
+          const { data: inserted, error } = await supabase
+            .from('video_sessions')
+            .insert([
+              {
+                user1_id: user.id,
+                user2_id: data.partnerProfile.id,
+                started_at: startedAt,
+                signal_data: null,
+              },
+            ])
+            .select()
+            .single();
+    
+          if (error) throw error;
+    
+          if (inserted) {
+            sessionIdRef.current = inserted.id as string;
+            console.log('Logged video session start to Supabase:', {
+              sessionId: inserted.id,
+              user1_id: user.id,
+              user2_id: data.partnerProfile.id,
+              started_at: startedAt,
+            });
+          }
+        } catch (err) {
+          console.error('Error logging video session start:', err);
+        }
+      }
+    
       if (data.isInitiator) {
         console.log('[match-found] You are the initiator, creating peer connection and offer');
         const peerConnection = setupPeerConnection();
@@ -1032,12 +1105,16 @@ const VideoChat = (): JSX.Element => {
       }
     };
 
-    // Register socket event listeners
+    const handleRemoteCallEnded = () => {
+      endVideoSession();
+      cleanupCall();
+    };
+    
     socket.on('match-found', handleMatchFound);
     socket.on('offer', handleOffer);
     socket.on('answer', handleAnswer);
     socket.on('ice-candidate', handleIceCandidate);
-    socket.on('call-ended', cleanupCall);
+    socket.on('call-ended', handleRemoteCallEnded);
     socket.on('disconnect', handleDisconnect);
     socket.on('error', (error: { message: string }) => setError(error.message));
 
@@ -1047,7 +1124,7 @@ const VideoChat = (): JSX.Element => {
       socket.off('offer', handleOffer);
       socket.off('answer', handleAnswer);
       socket.off('ice-candidate', handleIceCandidate);
-      socket.off('call-ended', cleanupCall);
+      socket.off('call-ended', handleRemoteCallEnded);
       socket.off('disconnect', handleDisconnect);
       socket.off('error');
     };
@@ -1055,6 +1132,7 @@ const VideoChat = (): JSX.Element => {
     socket,
     setupPeerConnection,
     cleanupCall,
+    endVideoSession,
     reconnectionAttempts,
     intentionalDisconnect,
     isCalling,
