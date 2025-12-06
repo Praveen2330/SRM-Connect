@@ -31,7 +31,7 @@ const AdminAccessControl: React.FC = () => {
           .from('admin_users')
           .select(`
             *,
-            profile:user_id(id, name, avatar_url)
+            profile:user_id(id, full_name, avatar_url)
           `)
           .order('created_at', { ascending: false });
         
@@ -56,9 +56,10 @@ const AdminAccessControl: React.FC = () => {
           role: 'super_admin',
           created_at: new Date().toISOString(),
           last_sign_in: new Date().toISOString(),
+          created_by: user?.id || null,
           profile: {
             id: user?.id || 'e1f9caeb-ae74-41af-984a-b44230ac7491',
-            name: user?.email?.split('@')[0] || 'Admin',
+            full_name: user?.email?.split('@')[0] || 'Admin',
             avatar_url: null
           }
         }
@@ -253,7 +254,9 @@ const AdminAccessControl: React.FC = () => {
             <div>
               <p className="font-semibold">Database Schema Error</p>
               <p className="text-sm">{error}</p>
-              <p className="text-sm mt-1">Using fallback data. Full functionality is limited until database issues are resolved.</p>
+              <p className="text-sm mt-1">
+                Using fallback data. Full functionality is limited until database issues are resolved.
+              </p>
             </div>
           </div>
         </div>
@@ -379,27 +382,34 @@ const AdminAccessControl: React.FC = () => {
               </tr>
             ) : (
               admins.map(admin => (
-                <tr key={admin.user_id} className={`hover:bg-gray-800 ${admin.user_id === user?.id ? 'bg-gray-800 bg-opacity-50' : ''}`}>
+                <tr
+                  key={admin.user_id}
+                  className={`hover:bg-gray-800 ${
+                    admin.user_id === user?.id ? 'bg-gray-800 bg-opacity-50' : ''
+                  }`}
+                >
                   <td className="px-6 py-4">
                     <div className="flex items-center">
                       <div className="flex-shrink-0 h-10 w-10">
                         {admin.profile?.avatar_url ? (
-                          <img 
-                            className="h-10 w-10 rounded-full object-cover" 
-                            src={admin.profile.avatar_url} 
-                            alt={admin.profile?.name || 'Admin'} 
+                          <img
+                            className="h-10 w-10 rounded-full object-cover"
+                            src={admin.profile.avatar_url}
+                            alt={admin.profile?.full_name || 'Admin'}
                           />
                         ) : (
                           <div className="h-10 w-10 rounded-full bg-gray-700 flex items-center justify-center">
                             <span className="text-xl text-gray-300">
-                              {(admin.profile?.name || 'A').charAt(0).toUpperCase()}
+                              {(admin.profile?.full_name || 'A')
+                                .charAt(0)
+                                .toUpperCase()}
                             </span>
                           </div>
                         )}
                       </div>
                       <div className="ml-4">
                         <div className="text-sm font-medium text-white">
-                          {admin.profile?.name || 'Unknown Admin'}
+                          {admin.profile?.full_name || 'Unknown Admin'}
                           {admin.user_id === user?.id && (
                             <span className="ml-2 px-2 inline-flex text-xs leading-5 font-semibold rounded-full bg-indigo-900 text-indigo-300">
                               You
@@ -421,11 +431,15 @@ const AdminAccessControl: React.FC = () => {
                     )}
                   </td>
                   <td className="px-6 py-4 whitespace-nowrap">
-                    {/* Show dropdown for role if this isn't ourselves */}
                     {admin.user_id !== user?.id ? (
                       <select
                         value={admin.role}
-                        onChange={(e) => handleUpdateRole(admin.user_id, e.target.value as AdminRole)}
+                        onChange={(e) =>
+                          handleUpdateRole(
+                            admin.user_id,
+                            e.target.value as AdminRole
+                          )
+                        }
                         className="p-1 rounded bg-gray-700 border border-gray-600 text-white text-sm"
                       >
                         <option value="viewer">Viewer</option>
@@ -433,25 +447,38 @@ const AdminAccessControl: React.FC = () => {
                         <option value="super_admin">Super Admin</option>
                       </select>
                     ) : (
-                      <span className={`px-2 inline-flex text-xs leading-5 font-semibold rounded-full
-                        ${admin.role === 'super_admin' ? 'bg-red-900 text-red-300' : 
-                          admin.role === 'moderator' ? 'bg-yellow-900 text-yellow-300' : 
-                          'bg-blue-900 text-blue-300'}`}
+                      <span
+                        className={`px-2 inline-flex text-xs leading-5 font-semibold rounded-full
+                        ${
+                          admin.role === 'super_admin'
+                            ? 'bg-red-900 text-red-300'
+                            : admin.role === 'moderator'
+                            ? 'bg-yellow-900 text-yellow-300'
+                            : 'bg-blue-900 text-blue-300'
+                        }`}
                       >
-                        {admin.role === 'super_admin' ? 'Super Admin' : 
-                         admin.role === 'moderator' ? 'Moderator' : 'Viewer'}
+                        {admin.role === 'super_admin'
+                          ? 'Super Admin'
+                          : admin.role === 'moderator'
+                          ? 'Moderator'
+                          : 'Viewer'}
                       </span>
                     )}
                   </td>
                   <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-300">
-                    {admin.last_sign_in 
-                      ? new Date(admin.last_sign_in).toLocaleString() 
+                    {admin.last_sign_in
+                      ? new Date(admin.last_sign_in).toLocaleString()
                       : 'Never'}
                   </td>
                   <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
                     {admin.user_id !== user?.id && (
                       <button
-                        onClick={() => handleRemoveAdmin(admin.user_id, admin.profile?.name || 'this admin')}
+                        onClick={() =>
+                          handleRemoveAdmin(
+                            admin.user_id,
+                            admin.profile?.full_name || 'this admin'
+                          )
+                        }
                         className="text-red-400 hover:text-red-300"
                       >
                         Remove Access
@@ -472,19 +499,28 @@ const AdminAccessControl: React.FC = () => {
             <span className="px-2 inline-flex text-xs leading-5 font-semibold rounded-full bg-blue-900 text-blue-300 mr-2 mt-0.5">
               Viewer
             </span>
-            <span>Read-only access to admin dashboard. Can view users, reports, and sessions but cannot take actions.</span>
+            <span>
+              Read-only access to admin dashboard. Can view users, reports, and
+              sessions but cannot take actions.
+            </span>
           </li>
           <li className="flex items-start">
             <span className="px-2 inline-flex text-xs leading-5 font-semibold rounded-full bg-yellow-900 text-yellow-300 mr-2 mt-0.5">
               Moderator
             </span>
-            <span>Can manage users, handle reports, and send broadcasts. Cannot change system settings or manage admin access.</span>
+            <span>
+              Can manage users, handle reports, and send broadcasts. Cannot
+              change system settings or manage admin access.
+            </span>
           </li>
           <li className="flex items-start">
             <span className="px-2 inline-flex text-xs leading-5 font-semibold rounded-full bg-red-900 text-red-300 mr-2 mt-0.5">
               Super Admin
             </span>
-            <span>Full access to all admin features including platform settings and admin access control.</span>
+            <span>
+              Full access to all admin features including platform settings and
+              admin access control.
+            </span>
           </li>
         </ul>
       </div>
