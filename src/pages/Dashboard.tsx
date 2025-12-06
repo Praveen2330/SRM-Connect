@@ -11,6 +11,7 @@ import {
   Megaphone,
 } from 'lucide-react';
 import { supabase } from '../lib/supabase';
+import { useAuth } from '../hooks/useAuth';
 import { RecentActivity } from '../types/activity';
 
 interface SystemAnnouncement {
@@ -38,29 +39,21 @@ function formatTimestamp(date: Date | string): string {
 
 function Dashboard() {
   const navigate = useNavigate();
+  const { user, adminStatus } = useAuth() as any;
 
   const [activities, setActivities] = useState<RecentActivity[]>([]);
   const [announcements, setAnnouncements] = useState<SystemAnnouncement[]>([]);
   const [loading, setLoading] = useState(true);
-  const [isAdmin, setIsAdmin] = useState(false);
 
   useEffect(() => {
     const fetchData = async () => {
+      if (!user) {
+        console.error('No authenticated user found');
+        setLoading(false);
+        return;
+      }
+
       try {
-        const {
-          data: { user },
-        } = await supabase.auth.getUser();
-
-        if (!user) {
-          console.error('No authenticated user found');
-          return;
-        }
-
-        // Simple admin flag based on fixed user id
-        if (user.id === 'e1f9caeb-ae74-41af-984a-b44230ac7491') {
-          setIsAdmin(true);
-        }
-
         // ---- Fetch user gender from profiles table ----
         let userGender: string | null = null;
         try {
@@ -185,8 +178,7 @@ function Dashboard() {
     };
 
     fetchData();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [user]);
 
   const handleFindMatch = () => {
     navigate('/video-chat');
@@ -199,7 +191,7 @@ function Dashboard() {
         <div className="flex justify-between items-center mb-12">
           <h1 className="text-4xl font-bold">Dashboard</h1>
           <div className="flex items-center gap-4">
-            {isAdmin && (
+            {adminStatus?.isAdmin && (
               <Link
                 to="/admin"
                 className="flex items-center gap-2 bg-indigo-900 p-2 rounded-lg hover:bg-indigo-800 transition-colors"
