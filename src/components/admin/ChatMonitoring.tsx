@@ -1,8 +1,13 @@
 import React, { useState, useEffect } from 'react';
 import { supabase } from '../../lib/supabase';
-import { ChatMessage, UserProfile } from '../../types';
+import { UserProfile } from '../../types';
 
-interface ExtendedChatMessage extends ChatMessage {
+interface ExtendedChatMessage {
+  id: string;
+  content: string;
+  timestamp: number;
+  fromSelf: boolean;
+  text: string;
   user_id?: string;
   recipient_id?: string;
   sender?: UserProfile;
@@ -35,106 +40,98 @@ const ChatMonitoring: React.FC = () => {
 
   useEffect(() => {
     if (!chats) return;
-    
+
     let filtered = [...chats];
-    
-    // Apply search filter
+
+    // Apply search filter (by content + IDs)
     if (searchTerm) {
       const term = searchTerm.toLowerCase();
-      filtered = filtered.filter(chat => 
-        chat.content.toLowerCase().includes(term) || 
-        chat.sender?.name?.toLowerCase().includes(term) ||
-        chat.recipient?.name?.toLowerCase().includes(term)
+      filtered = filtered.filter(chat =>
+        chat.content.toLowerCase().includes(term) ||
+        chat.user_id?.toLowerCase().includes(term) ||
+        chat.recipient_id?.toLowerCase().includes(term)
       );
     }
-    
+
     // Flag messages containing keywords
     filtered = filtered.map(chat => ({
       ...chat,
-      flagged: flaggedKeywords.some(keyword => 
+      flagged: flaggedKeywords.some(keyword =>
         chat.content.toLowerCase().includes(keyword.toLowerCase())
       )
     }));
-    
+
     // Filter by flagged status if needed
     if (flaggedOnly) {
       filtered = filtered.filter(chat => chat.flagged);
     }
-    
+
     setFilteredChats(filtered);
   }, [chats, searchTerm, flaggedOnly, flaggedKeywords]);
 
   const fetchChats = async () => {
     setIsLoading(true);
     setError(null);
-    
-    try {
-           // Prepare time filters using JavaScript dates (Supabase doesn't accept raw SQL in filters)
-           let fromDate: string | null = null;
 
-           if (timeFilter === '24h') {
-             const d = new Date();
-             d.setHours(d.getHours() - 24);
-             fromDate = d.toISOString();
-           } else if (timeFilter === '7d') {
-             const d = new Date();
-             d.setDate(d.getDate() - 7);
-             fromDate = d.toISOString();
-           } else if (timeFilter === '30d') {
-             const d = new Date();
-             d.setDate(d.getDate() - 30);
-             fromDate = d.toISOString();
-           }
-           // if timeFilter === 'all', fromDate stays null and no time filter is applied
-            // Get total count
-            let countQuery = supabase
-            .from('chat_messages')
-            .select('*', { count: 'exact', head: true });
-    
-          if (fromDate) {
-            countQuery = countQuery.gte('created_at', fromDate);
-          }
-    
-          const { count, error: countError } = await countQuery.order('created_at', { ascending: false });
-    
-          if (countError) throw countError;
-          setTotalChats(count || 0);
-      
-            // Fetch paginated chats with user profiles
-            let query = supabase
-            .from('chat_messages')
-            .select(`
-              *,
-              sender:user_id(id, name, avatar_url),
-              recipient:recipient_id(id, name, avatar_url)
-            `)
-            .order('created_at', { ascending: false })
-            .range((page - 1) * chatsPerPage, page * chatsPerPage - 1);
-    
-          // Apply time filter if needed
-          if (fromDate) {
-            query = query.gte('created_at', fromDate);
-          }
-    
-          const { data, error } = await query;
-    
-      
+    try {
+      // Prepare time filters using JavaScript dates
+      let fromDate: string | null = null;
+
+      if (timeFilter === '24h') {
+        const d = new Date();
+        d.setHours(d.getHours() - 24);
+        fromDate = d.toISOString();
+      } else if (timeFilter === '7d') {
+        const d = new Date();
+        d.setDate(d.getDate() - 7);
+        fromDate = d.toISOString();
+      } else if (timeFilter === '30d') {
+        const d = new Date();
+        d.setDate(d.getDate() - 30);
+        fromDate = d.toISOString();
+      }
+      // if timeFilter === 'all', fromDate stays null and no time filter is applied
+
+      // Get total count (no order on head: true query)
+      let countQuery = supabase
+        .from('chat_messages')
+        .select('*', { count: 'exact', head: true });
+
+      if (fromDate) {
+        countQuery = countQuery.gte('created_at', fromDate);
+      }
+
+      const { count, error: countError } = await countQuery;
+      if (countError) throw countError;
+      setTotalChats(count || 0);
+
+      // Fetch paginated chats (no joins – schema has no FK relationships)
+      let query = supabase
+        .from('chat_messages')
+        .select('*')
+        .order('created_at', { ascending: false })
+        .range((page - 1) * chatsPerPage, page * chatsPerPage - 1);
+
+      // Apply time filter if needed
+      if (fromDate) {
+        query = query.gte('created_at', fromDate);
+      }
+
+      const { data, error } = await query;
       if (error) throw error;
-      
+
       if (data) {
-        const transformedData = data.map(message => ({
+        const transformedData: ExtendedChatMessage[] = data.map((message: any) => ({
           id: message.id,
-          content: message.content,
+          content: message.content ?? '',
           timestamp: new Date(message.created_at).getTime(),
           fromSelf: false,
-          text: message.content,
+          text: message.content ?? '',
           user_id: message.user_id,
           recipient_id: message.recipient_id,
-          sender: message.sender,
-          recipient: message.recipient,
           flagged: false // Will be set in the useEffect
         }));
-        
+
         setChats(transformedData);
       }
     } catch (error) {
@@ -147,12 +144,12 @@ const ChatMonitoring: React.FC = () => {
 
   const addKeyword = () => {
     if (!newKeyword.trim()) return;
-    
+
     // Check if keyword already exists
     if (flaggedKeywords.includes(newKeyword.trim())) {
       return;
     }
-    
+
     setFlaggedKeywords([...flaggedKeywords, newKeyword.trim()]);
     setNewKeyword('');
   };
@@ -167,7 +164,7 @@ const ChatMonitoring: React.FC = () => {
     <div>
       <div className="flex justify-between items-center mb-6">
         <h2 className="text-2xl font-bold">Chat Monitoring</h2>
-        
+
         <div className="flex items-center space-x-2">
           <button
             onClick={fetchChats}
@@ -180,13 +177,13 @@ const ChatMonitoring: React.FC = () => {
           </button>
         </div>
       </div>
-      
+
       {error && (
         <div className="bg-red-900 bg-opacity-20 border border-red-800 rounded-lg p-4 mb-6">
           <p className="text-red-400">{error}</p>
         </div>
       )}
-      
+
       {/* Filters */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
         <div>
@@ -198,11 +195,11 @@ const ChatMonitoring: React.FC = () => {
             id="search"
             value={searchTerm}
             onChange={(e) => setSearchTerm(e.target.value)}
-            placeholder="Search by message content or username"
+            placeholder="Search by message content or user ID"
             className="w-full p-2 rounded bg-gray-800 border border-gray-700 text-white"
           />
         </div>
-        
+
         <div>
           <label htmlFor="timeFilter" className="block text-sm font-medium text-gray-400 mb-1">
             Time Period
@@ -222,7 +219,7 @@ const ChatMonitoring: React.FC = () => {
             <option value="all">All Time</option>
           </select>
         </div>
-        
+
         <div>
           <label className="block text-sm font-medium text-gray-400 mb-1">
             Filter Options
@@ -238,12 +235,12 @@ const ChatMonitoring: React.FC = () => {
           </label>
         </div>
       </div>
-      
+
       {/* Flagged Keywords Section */}
       <div className="bg-gray-800 rounded-lg p-4 mb-6">
         <div className="flex justify-between items-start mb-3">
           <h3 className="text-lg font-medium">Flagged Keywords</h3>
-          
+
           <div className="flex items-center space-x-2">
             <input
               type="text"
@@ -260,15 +257,15 @@ const ChatMonitoring: React.FC = () => {
             </button>
           </div>
         </div>
-        
+
         <div className="flex flex-wrap gap-2">
           {flaggedKeywords.map(keyword => (
-            <div 
-              key={keyword} 
+            <div
+              key={keyword}
               className="bg-gray-700 text-gray-300 px-2 py-1 rounded-full text-sm flex items-center"
             >
               <span>{keyword}</span>
-              <button 
+              <button
                 onClick={() => removeKeyword(keyword)}
                 className="ml-2 text-gray-400 hover:text-gray-200"
               >
@@ -279,12 +276,12 @@ const ChatMonitoring: React.FC = () => {
             </div>
           ))}
         </div>
-        
+
         <p className="text-xs text-gray-500 mt-2">
           Messages containing these keywords will be flagged for review.
         </p>
       </div>
-      
+
       {/* Chats Table */}
       <div className="overflow-x-auto bg-gray-800 rounded-lg shadow-md">
         <table className="min-w-full divide-y divide-gray-700">
@@ -324,8 +321,8 @@ const ChatMonitoring: React.FC = () => {
               </tr>
             ) : (
               filteredChats.map(chat => (
-                <tr 
-                  key={chat.id} 
+                <tr
+                  key={chat.id}
                   className={`hover:bg-gray-800 ${chat.flagged ? 'bg-red-900 bg-opacity-10' : ''}`}
                   onClick={() => {
                     setSelectedChat(chat);
@@ -335,23 +332,16 @@ const ChatMonitoring: React.FC = () => {
                   <td className="px-6 py-4 whitespace-nowrap">
                     <div className="flex items-center">
                       <div className="flex-shrink-0 h-8 w-8">
-                        {chat.sender?.avatar_url ? (
-                          <img 
-                            className="h-8 w-8 rounded-full object-cover" 
-                            src={chat.sender.avatar_url} 
-                            alt={chat.sender?.name || 'Sender'} 
-                          />
-                        ) : (
-                          <div className="h-8 w-8 rounded-full bg-gray-700 flex items-center justify-center">
-                            <span className="text-sm text-gray-300">
-                              {(chat.sender?.name || 'S').charAt(0).toUpperCase()}
-                            </span>
-                          </div>
-                        )}
+                        {/* No sender profile data yet; show placeholder */}
+                        <div className="h-8 w-8 rounded-full bg-gray-700 flex items-center justify-center">
+                          <span className="text-sm text-gray-300">
+                            {(chat.user_id ? chat.user_id.charAt(0) : 'S').toUpperCase()}
+                          </span>
+                        </div>
                       </div>
                       <div className="ml-3">
                         <div className="text-sm font-medium text-white">
-                          {chat.sender?.name || 'Unknown Sender'}
+                          {chat.user_id ? `User ${chat.user_id.slice(0, 8)}...` : 'Unknown Sender'}
                         </div>
                         <div className="text-xs text-gray-500">{chat.user_id}</div>
                       </div>
@@ -360,23 +350,17 @@ const ChatMonitoring: React.FC = () => {
                   <td className="px-6 py-4 whitespace-nowrap">
                     <div className="flex items-center">
                       <div className="flex-shrink-0 h-8 w-8">
-                        {chat.recipient?.avatar_url ? (
-                          <img 
-                            className="h-8 w-8 rounded-full object-cover" 
-                            src={chat.recipient.avatar_url} 
-                            alt={chat.recipient?.name || 'Recipient'} 
-                          />
-                        ) : (
-                          <div className="h-8 w-8 rounded-full bg-gray-700 flex items-center justify-center">
-                            <span className="text-sm text-gray-300">
-                              {(chat.recipient?.name || 'R').charAt(0).toUpperCase()}
-                            </span>
-                          </div>
-                        )}
+                        <div className="h-8 w-8 rounded-full bg-gray-700 flex items-center justify-center">
+                          <span className="text-sm text-gray-300">
+                            {(chat.recipient_id ? chat.recipient_id.charAt(0) : 'R').toUpperCase()}
+                          </span>
+                        </div>
                       </div>
                       <div className="ml-3">
                         <div className="text-sm font-medium text-white">
-                          {chat.recipient?.name || 'Unknown Recipient'}
+                          {chat.recipient_id
+                            ? `User ${chat.recipient_id.slice(0, 8)}...`
+                            : 'Unknown Recipient'}
                         </div>
                         <div className="text-xs text-gray-500">{chat.recipient_id}</div>
                       </div>
@@ -403,7 +387,7 @@ const ChatMonitoring: React.FC = () => {
           </tbody>
         </table>
       </div>
-      
+
       {/* Pagination */}
       <div className="flex justify-between items-center mt-6">
         <div className="text-sm text-gray-400">
@@ -414,34 +398,38 @@ const ChatMonitoring: React.FC = () => {
             </span>
           )}
         </div>
-        
+
         <div className="flex space-x-2">
           <button
             onClick={() => setPage(prevPage => Math.max(prevPage - 1, 1))}
             disabled={page === 1}
-            className={`px-3 py-1 rounded ${page === 1 
-              ? 'bg-gray-800 text-gray-500 cursor-not-allowed' 
-              : 'bg-gray-700 text-white hover:bg-gray-600'}`}
+            className={`px-3 py-1 rounded ${
+              page === 1
+                ? 'bg-gray-800 text-gray-500 cursor-not-allowed'
+                : 'bg-gray-700 text-white hover:bg-gray-600'
+            }`}
           >
             Previous
           </button>
-          
+
           <span className="px-3 py-1 bg-gray-800 rounded">
             Page {page} of {totalPages || 1}
           </span>
-          
+
           <button
             onClick={() => setPage(prevPage => prevPage + 1)}
             disabled={page >= totalPages}
-            className={`px-3 py-1 rounded ${page >= totalPages 
-              ? 'bg-gray-800 text-gray-500 cursor-not-allowed' 
-              : 'bg-gray-700 text-white hover:bg-gray-600'}`}
+            className={`px-3 py-1 rounded ${
+              page >= totalPages
+                ? 'bg-gray-800 text-gray-500 cursor-not-allowed'
+                : 'bg-gray-700 text-white hover:bg-gray-600'
+            }`}
           >
             Next
           </button>
         </div>
       </div>
-      
+
       {/* Chat Details Modal */}
       {isChatModalOpen && selectedChat && (
         <div className="fixed inset-0 bg-black bg-opacity-75 flex items-center justify-center z-50 p-4">
@@ -460,65 +448,64 @@ const ChatMonitoring: React.FC = () => {
                 </svg>
               </button>
             </div>
-            
+
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6">
               <div>
                 <h5 className="text-sm font-medium text-gray-400 mb-2">Sender</h5>
                 <div className="bg-gray-800 rounded p-4 flex items-center">
                   <div className="flex-shrink-0 mr-3">
-                    {selectedChat.sender?.avatar_url ? (
-                      <img 
-                        className="h-10 w-10 rounded-full object-cover" 
-                        src={selectedChat.sender.avatar_url} 
-                        alt={selectedChat.sender?.name || 'Sender'} 
-                      />
-                    ) : (
-                      <div className="h-10 w-10 rounded-full bg-gray-700 flex items-center justify-center">
-                        <span className="text-lg text-gray-300">
-                          {(selectedChat.sender?.name || 'S').charAt(0).toUpperCase()}
-                        </span>
-                      </div>
-                    )}
+                    <div className="h-10 w-10 rounded-full bg-gray-700 flex items-center justify-center">
+                      <span className="text-lg text-gray-300">
+                        {(selectedChat.user_id ? selectedChat.user_id.charAt(0) : 'S').toUpperCase()}
+                      </span>
+                    </div>
                   </div>
                   <div>
-                    <div className="font-medium">{selectedChat.sender?.name || 'Unknown Sender'}</div>
+                    <div className="font-medium">
+                      {selectedChat.user_id
+                        ? `User ${selectedChat.user_id.slice(0, 8)}...`
+                        : 'Unknown Sender'}
+                    </div>
                     <div className="text-sm text-gray-400">ID: {selectedChat.user_id}</div>
                   </div>
                 </div>
               </div>
-              
+
               <div>
                 <h5 className="text-sm font-medium text-gray-400 mb-2">Recipient</h5>
                 <div className="bg-gray-800 rounded p-4 flex items-center">
                   <div className="flex-shrink-0 mr-3">
-                    {selectedChat.recipient?.avatar_url ? (
-                      <img 
-                        className="h-10 w-10 rounded-full object-cover" 
-                        src={selectedChat.recipient.avatar_url} 
-                        alt={selectedChat.recipient?.name || 'Recipient'} 
-                      />
-                    ) : (
-                      <div className="h-10 w-10 rounded-full bg-gray-700 flex items-center justify-center">
-                        <span className="text-lg text-gray-300">
-                          {(selectedChat.recipient?.name || 'R').charAt(0).toUpperCase()}
-                        </span>
-                      </div>
-                    )}
+                    <div className="h-10 w-10 rounded-full bg-gray-700 flex items-center justify-center">
+                      <span className="text-lg text-gray-300">
+                        {(selectedChat.recipient_id
+                          ? selectedChat.recipient_id.charAt(0)
+                          : 'R'
+                        ).toUpperCase()}
+                      </span>
+                    </div>
                   </div>
                   <div>
-                    <div className="font-medium">{selectedChat.recipient?.name || 'Unknown Recipient'}</div>
-                    <div className="text-sm text-gray-400">ID: {selectedChat.recipient_id}</div>
+                    <div className="font-medium">
+                      {selectedChat.recipient_id
+                        ? `User ${selectedChat.recipient_id.slice(0, 8)}...`
+                        : 'Unknown Recipient'}
+                    </div>
+                    <div className="text-sm text-gray-400">
+                      ID: {selectedChat.recipient_id}
+                    </div>
                   </div>
                 </div>
               </div>
             </div>
-            
+
             <div className="mb-6">
               <h5 className="text-sm font-medium text-gray-400 mb-2">Message</h5>
               <div className="bg-gray-800 rounded p-4">
                 <div className="mb-3">
                   <div className="text-xs text-gray-500">Timestamp</div>
-                  <div className="text-sm">{new Date(selectedChat.timestamp).toLocaleString()}</div>
+                  <div className="text-sm">
+                    {new Date(selectedChat.timestamp).toLocaleString()}
+                  </div>
                 </div>
                 <div>
                   <div className="text-xs text-gray-500">Content</div>
@@ -526,43 +513,52 @@ const ChatMonitoring: React.FC = () => {
                     {selectedChat.content}
                   </div>
                 </div>
-                
+
                 {selectedChat.flagged && (
                   <div className="mt-4 bg-red-900 bg-opacity-20 border border-red-800 rounded p-3">
                     <div className="text-sm font-medium text-red-400 mb-1">
                       Flagged for containing:
                     </div>
                     <div className="flex flex-wrap gap-2">
-                      {flaggedKeywords.filter(keyword => 
-                        selectedChat.content.toLowerCase().includes(keyword.toLowerCase())
-                      ).map(keyword => (
-                        <span 
-                          key={keyword} 
-                          className="bg-red-800 bg-opacity-50 text-red-300 px-2 py-0.5 rounded-full text-xs"
-                        >
-                          {keyword}
-                        </span>
-                      ))}
+                      {flaggedKeywords
+                        .filter(keyword =>
+                          selectedChat.content
+                            .toLowerCase()
+                            .includes(keyword.toLowerCase())
+                        )
+                        .map(keyword => (
+                          <span
+                            key={keyword}
+                            className="bg-red-800 bg-opacity-50 text-red-300 px-2 py-0.5 rounded-full text-xs"
+                          >
+                            {keyword}
+                          </span>
+                        ))}
                     </div>
                   </div>
                 )}
               </div>
             </div>
-            
+
             <div className="flex justify-end space-x-3 pt-4 border-t border-gray-800">
               <button
                 onClick={() => {
-                  window.open(`/admin/users?id=${selectedChat.user_id}`, '_blank');
+                  if (selectedChat.user_id) {
+                    window.open(`/admin/users?id=${selectedChat.user_id}`, '_blank');
+                  }
                 }}
                 className="px-4 py-2 bg-indigo-800 hover:bg-indigo-700 rounded"
               >
                 View Sender Profile
               </button>
-              
+
               <button
                 onClick={() => {
-                  // Generate report URL with pre-filled information
-                  const reportUrl = `/admin/reports/new?reported_user_id=${selectedChat.user_id}&reason=Inappropriate message: ${encodeURIComponent(selectedChat.content.substring(0, 50))}...`;
+                  if (!selectedChat.user_id) return;
+                  const reason = `Inappropriate message: ${selectedChat.content.substring(0, 50)}...`;
+                  const reportUrl = `/admin/reports/new?reported_user_id=${selectedChat.user_id}&reason=${encodeURIComponent(
+                    reason
+                  )}`;
                   window.open(reportUrl, '_blank');
                 }}
                 className="px-4 py-2 bg-red-800 hover:bg-red-700 rounded"
