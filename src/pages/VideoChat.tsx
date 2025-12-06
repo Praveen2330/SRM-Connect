@@ -33,13 +33,11 @@ const SOCKET_URL =
     ? 'https://srm-connect-socketio.onrender.com'
     : (import.meta.env.VITE_SOCKET_SERVER_URL || 'https://srm-connect-socketio.onrender.com');
 
-// Log the socket URL and current environment
 console.log('Using Socket.IO server URL:', SOCKET_URL);
 console.log('Current environment:', import.meta.env.MODE);
 console.log('Current protocol:', window.location.protocol);
 console.log('Current hostname:', window.location.hostname);
 
-// Socket.IO connection options
 const SOCKET_OPTIONS = {
   reconnection: true,
   reconnectionAttempts: Infinity,
@@ -229,28 +227,37 @@ const VideoChat = (): JSX.Element => {
 
   const handleReportSubmit = async () => {
     setReportError(null);
-
+  
     if (!user) {
       setReportError('You must be logged in to submit a report.');
       return;
     }
-
+  
     if (!partnerProfile) {
       setReportError('Could not find the user you are trying to report. Please try again while in an active call.');
       return;
     }
-
+  
     if (!reportReason.trim()) {
       setReportError('Please describe the issue before submitting.');
       return;
     }
-
+  
     setIsReportSubmitting(true);
+  
     try {
-      // Get the current timestamp
       const reportTimestamp = new Date().toISOString();
-
-      // Create a report object with more detailed information
+  
+      // Build structured JSON context for Supabase JSONB column
+      const reportContext = {
+        session_start_time: new Date(
+          isCalling ? Date.now() - 600000 : Date.now()
+        ).toISOString(),
+        report_location: 'video_chat',
+        client_timestamp: reportTimestamp,
+      };
+  
+      // Build report insert payload
       const reportData = {
         reporter_id: user.id,
         reported_user_id: partnerProfile.id,
@@ -261,23 +268,18 @@ const VideoChat = (): JSX.Element => {
         reporter_email: user.email,
         reporter_display_name: user.user_metadata?.display_name || 'Anonymous',
         reported_user_email: partnerProfile.email || 'Unknown',
-        reported_user_display_name: partnerProfile.display_name || partnerProfile.name || 'Unknown',
-        // Include metadata about the report context
-        context: {
-          session_start_time: new Date(isCalling ? Date.now() - 600000 : Date.now()).toISOString(), // Approximate session start time
-          report_location: 'video_chat',
-          client_timestamp: reportTimestamp,
-        },
+        reported_user_display_name:
+          partnerProfile.display_name || partnerProfile.name || 'Unknown',
+        context: reportContext, // JSONB — not stringified
       };
-
-      // Submit the report to Supabase
+  
+      console.log('Submitting report to Supabase:', reportData);
+  
       const { error } = await supabase.from('user_reports').insert([reportData]);
-
+  
       if (error) throw error;
-
-      console.log('Report submitted successfully:', reportData);
-
-      // Show success message and reset form
+  
+      // If success → show success UI
       setReportSuccess(true);
       setTimeout(() => {
         setIsReporting(false);
