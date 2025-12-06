@@ -116,12 +116,23 @@ function Dashboard() {
         } else if (announcementData) {
           const now = new Date();
           const visibleAnnouncements = announcementData.filter((a: SystemAnnouncement) => {
-            // Show if no expiry or still valid
             const notExpired = !a.expires_at || new Date(a.expires_at) >= now;
-            // For now, treat null/empty or 'all' target_users as global
-            const isGlobalTarget =
-              !a.target_users || a.target_users.toLowerCase() === 'all';
-            return notExpired && isGlobalTarget;
+
+            const userGender = profile?.gender?.toLowerCase() || null;
+            const target = a.target_users?.toLowerCase() || 'all'; // all, male, female, any
+
+            let matchesTarget = true;
+
+            if (target === 'all' || target === 'any') {
+              // show to everyone
+              matchesTarget = true;
+            } else if (target === 'male') {
+              matchesTarget = userGender === 'male';
+            } else if (target === 'female') {
+              matchesTarget = userGender === 'female';
+            }
+
+            return notExpired && matchesTarget;
           });
           setAnnouncements(visibleAnnouncements);
         }
