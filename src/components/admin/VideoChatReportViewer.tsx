@@ -10,7 +10,6 @@ interface VideoChatReport {
   created_at: string;
   reported_at?: string;
   status: 'pending' | 'in_review' | 'resolved' | 'dismissed';
-  // new optional fields for names
   reporter_name?: string;
   reported_user_name?: string;
 }

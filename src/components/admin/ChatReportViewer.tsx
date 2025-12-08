@@ -6,7 +6,7 @@ import { Shield, AlertTriangle, CheckCircle, XCircle, RefreshCw } from 'lucide-r
 const SOCKET_URL =
   import.meta.env.MODE === 'production'
     ? 'https://srm-connect-socketio.onrender.com'
-    : (import.meta.env.VITE_SOCKET_URL || 'http://localhost:3002');
+    : (import.meta.env.VITE_SOCKET_URL || 'https://srm-connect-socketio.onrender.com');
 
 interface ChatReport {
   id: string;

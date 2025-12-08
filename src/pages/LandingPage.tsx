@@ -1,7 +1,6 @@
-import React from 'react';
 import { Link } from 'react-router-dom';
 import { Camera, Heart, MessageCircle, Shield } from 'lucide-react';
-import logo from '../assets/srm-connect-logo.png';
+import logo from "../assets/srm-connect-logo.png";
 
 function LandingPage() {
   return (
