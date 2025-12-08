@@ -1,3 +1,4 @@
+import { API_BASE_URL } from '../../utils/api'; // adjust path if needed
 import React, { useState, useEffect } from 'react';
 import { supabase } from '../../lib/supabase';
 import { ExtendedUserProfile, AdminRole } from '../../types';
@@ -75,7 +76,7 @@ const UserManagement: React.FC<UserManagementProps> = ({ canManage }) => {
     setFilteredUsers(filtered);
   }, [users, searchTerm, genderFilter, statusFilter]);
 
-  // Handler for admin manual user creation
+  // Handler for admin manual user creation (calls backend API)
   const handleAddUserSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setAddUserLoading(true);
@@ -83,58 +84,32 @@ const UserManagement: React.FC<UserManagementProps> = ({ canManage }) => {
     setAddUserSuccess(null);
 
     try {
-      // 1) Create user in Supabase Auth
-      const { data: signUpData, error: signUpError } =
-        await supabase.auth.admin.createUser({
-          email: newUserEmail,
-          password: newUserPassword,
-          email_confirm: true,
-          user_metadata: { name: newUserName, gender: newUserGender }
-        });
-
-      if (signUpError || !signUpData || !signUpData.user) {
-        throw signUpError || new Error('Failed to create user');
+      if (!user) {
+        setAddUserError('You must be logged in to create users.');
+        return;
       }
 
-      const userId = signUpData.user.id;
-
-      // 2) Create profile row
-      const { error: profileError } = await supabase.from('profiles').insert([
+      const response = await fetch(
+        `${API_BASE_URL}/api/admin/createUser`,
         {
-          id: userId,
-          display_name: newUserName,
-          gender: newUserGender,
-          created_at: new Date().toISOString(),
-          updated_at: new Date().toISOString(),
-          is_new_user: true,
-          has_accepted_rules: false,
-          is_online: false,
-          last_seen: null,
-          bio: '',
-          interests: [],
-          avatar_url: null,
-          language: 'en',
-          age: 18,
-          gender_preference: 'any'
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            requesterId: user.id,
+            email: newUserEmail,
+            password: newUserPassword,
+            name: newUserName,
+            gender: newUserGender,
+            isAdmin: isAdminUser,
+            adminRole,
+          }),
         }
-      ]);
+      );
 
-      if (profileError) throw profileError;
+      const result = await response.json();
 
-      // 3) If admin selected, create admin_users row
-      if (isAdminUser) {
-        const { error: adminError } = await supabase
-          .from('admin_users')
-          .insert([
-            {
-              user_id: userId,
-              role: adminRole,
-              created_by: user?.id ?? null,
-              created_at: new Date().toISOString()
-            }
-          ]);
-
-        if (adminError) throw adminError;
+      if (!response.ok || result.error) {
+        throw new Error(result.error || 'Failed to create user');
       }
 
       setAddUserSuccess('User created successfully!');
@@ -161,137 +136,26 @@ const UserManagement: React.FC<UserManagementProps> = ({ canManage }) => {
     setError(null);
 
     try {
-      // First approach: profiles only
-      try {
-        const { count, error: countError } = await supabase
-          .from('profiles')
-          .select('*', { count: 'exact', head: true });
+      const params = new URLSearchParams({
+        page: page.toString(),
+        perPage: usersPerPage.toString(),
+        sortBy,
+        sortDirection
+      });
 
-        if (countError) throw countError;
-        setTotalUsers(count || 0);
+      const response = await fetch(
+        `https://srm-connect-backend.onrender.com/api/admin/users?${params.toString()}`
+      );
 
-        const { data, error } = await supabase
-          .from('profiles')
-          .select('*')
-          .order(sortBy, { ascending: sortDirection === 'asc' })
-          .range((page - 1) * usersPerPage, page * usersPerPage - 1);
+      const data = await response.json();
 
-        if (error) throw error;
-
-        if (data) {
-          // Transform data to match ExtendedUserProfile
-          const transformedUsers: ExtendedUserProfile[] = data.map((profile: any) => ({
-            id: profile.id,
-            name: profile.display_name || profile.name || 'Anonymous',
-            email: profile.users?.email || '',
-            created_at: profile.users?.created_at || profile.created_at,
-            last_sign_in_at: profile.users?.last_sign_in_at,
-            gender: profile.gender || 'unknown',
-            status: profile.status || 'active',
-            user_metadata: profile.users?.user_metadata,
-            avatar_url: profile.avatar_url
-          }));
-
-          setUsers(transformedUsers);
-          setFilteredUsers(transformedUsers);
-          return;
-        }
-      } catch (joinError) {
-        console.error('Error with join query:', joinError);
-
-        // Second approach: profiles + auth.users separately
-        try {
-          const { data: profilesData, error: profilesError } = await supabase
-            .from('profiles')
-            .select('*')
-            .order(sortBy, { ascending: sortDirection === 'asc' })
-            .range((page - 1) * usersPerPage, page * usersPerPage - 1);
-
-          if (profilesError) throw profilesError;
-
-          if (profilesData && profilesData.length > 0) {
-            const userIds = profilesData.map((profile: any) => profile.id);
-
-            // NOTE: auth.users isn't directly queryable via supabase-js this way in newer versions,
-            // but keeping this for your current fallback pattern.
-            const { data: authData, error: authError } = await supabase
-              .from('auth.users' as any)
-              .select('id, email, created_at, last_sign_in_at, user_metadata')
-              .in('id', userIds);
-
-            const authMap = new Map<string, any>();
-            if (!authError && authData) {
-              (authData as any[]).forEach((authUser) => {
-                authMap.set(authUser.id, authUser);
-              });
-            }
-
-            const transformedUsers: ExtendedUserProfile[] = profilesData.map((profile: any) => {
-              const authUser = authMap.get(profile.id);
-              return {
-                id: profile.id,
-                name: profile.display_name || profile.name || 'Anonymous',
-                email: authUser?.email || '',
-                created_at: authUser?.created_at || profile.created_at,
-                last_sign_in_at: authUser?.last_sign_in_at,
-                gender: profile.gender || 'unknown',
-                status: profile.status || 'active',
-                user_metadata: authUser?.user_metadata,
-                avatar_url: profile.avatar_url
-              };
-            });
-
-            setUsers(transformedUsers);
-            setFilteredUsers(transformedUsers);
-            return;
-          }
-        } catch (separateQueryError) {
-          console.error('Error with separate queries:', separateQueryError);
-        }
+      if (!response.ok || !data.success) {
+        throw new Error(data.error || 'Failed to fetch users');
       }
 
-      // Fallback demo data
-      console.log('Using fallback user data due to database errors');
-      const fallbackUsers: ExtendedUserProfile[] = [
-        {
-          id: 'e1f9caeb-ae74-41af-984a-b44230ac7491',
-          name: 'Admin User',
-          email: 'pn7054@srmist.edu.in',
-          created_at: '2025-03-29T12:31:19.255746Z',
-          last_sign_in_at: new Date().toISOString(),
-          gender: 'male',
-          status: 'active',
-          user_metadata: { name: 'Admin' },
-          avatar_url: null
-        },
-        {
-          id: '00000000-0000-0000-0000-000000000001',
-          name: 'Test User 1',
-          email: 'test1@srmist.edu.in',
-          created_at: '2025-04-01T10:00:00Z',
-          last_sign_in_at: '2025-05-09T14:30:00Z',
-          gender: 'female',
-          status: 'active',
-          user_metadata: { name: 'Test User 1' },
-          avatar_url: null
-        },
-        {
-          id: '00000000-0000-0000-0000-000000000002',
-          name: 'Test User 2',
-          email: 'test2@srmist.edu.in',
-          created_at: '2025-04-02T11:00:00Z',
-          last_sign_in_at: '2025-05-08T09:15:00Z',
-          gender: 'male',
-          status: 'active',
-          user_metadata: { name: 'Test User 2' },
-          avatar_url: null
-        }
-      ];
-
-      setTotalUsers(fallbackUsers.length);
-      setUsers(fallbackUsers);
-      setFilteredUsers(fallbackUsers);
-      setError('Database relationship error. Using demo data.');
+      setTotalUsers(data.total || 0);
+      setUsers(data.users || []);
+      setFilteredUsers(data.users || []);
     } catch (error) {
       console.error('Error fetching users:', error);
       setError((error as Error).message);

@@ -1,3 +1,5 @@
+require('dotenv').config({ path: __dirname + '/.env' });
+const adminRoutes = require('./createUser');
 const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
@@ -105,6 +107,8 @@ app.options('*', cors(corsOptions));
 // Body parser middleware
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+
+app.use('/api', adminRoutes);
 
 // Error handling middleware
 app.use((err, req, res, next) => {

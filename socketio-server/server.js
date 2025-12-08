@@ -35,6 +35,10 @@ const allowedOrigins =
         : [
             'https://srmconnect2025.vercel.app',
             'https://srm-connect.vercel.app',
+            // Allow local development frontends to connect to the Render socket server
+            'http://localhost:3000',
+            'http://localhost:5173',
+            'http://localhost:5174',
           ])
     : [
         'http://localhost:3000',
@@ -144,45 +148,58 @@ io.on('connection', (socket) => {
   
   // Handle instant chat messages
   socket.on('chat-message', (data) => {
-    const partnerSocketId = activeConnections.get(data.to);
-    if (partnerSocketId) {
-      // Generate a unique message ID
-      const messageId = uuidv4();
-      
-      // Create message object
-      const messageObj = {
-        id: messageId,
-        message: data.message,
-        from: data.from,
-        senderName: data.senderName || 'Anonymous',
-        timestamp: Date.now()
-      };
-      
-      // Store message in buffer for potential reporting
-      for (const [chatId, chat] of activeInstantChats.entries()) {
-        if ((chat.user1Id === data.from && chat.user2Id === data.to) || 
-            (chat.user2Id === data.from && chat.user1Id === data.to)) {
-          
-          // Initialize chat buffer if it doesn't exist
-          if (!chatMessagesBuffer.has(chatId)) {
-            chatMessagesBuffer.set(chatId, []);
-          }
-          
-          // Add message to buffer
-          const chatBuffer = chatMessagesBuffer.get(chatId);
-          chatBuffer.push(messageObj);
-          
-          // Limit buffer size to last 100 messages
-          if (chatBuffer.length > 100) {
-            chatBuffer.shift();
-          }
-          
-          break;
+    const { id, message, to, from, senderName, replyToId } = data;
+
+    const partnerSocketId = activeConnections.get(to);
+    const senderSocketId = activeConnections.get(from);
+
+    if (!partnerSocketId && !senderSocketId) {
+      return;
+    }
+
+    // Use existing id from client if provided, otherwise generate one
+    const messageId = id || uuidv4();
+
+    // Create message object
+    const messageObj = {
+      id: messageId,
+      message,
+      from,
+      senderName: senderName || 'Anonymous',
+      timestamp: Date.now(),
+      replyToId: replyToId || null,
+    };
+
+    // Store message in buffer for potential reporting
+    for (const [chatId, chat] of activeInstantChats.entries()) {
+      if (
+        (chat.user1Id === from && chat.user2Id === to) ||
+        (chat.user2Id === from && chat.user1Id === to)
+      ) {
+        if (!chatMessagesBuffer.has(chatId)) {
+          chatMessagesBuffer.set(chatId, []);
         }
+
+        const chatBuffer = chatMessagesBuffer.get(chatId);
+        chatBuffer.push(messageObj);
+
+        // Limit buffer size to last 100 messages
+        if (chatBuffer.length > 100) {
+          chatBuffer.shift();
+        }
+
+        break;
       }
-      
-      // Send message to recipient
+    }
+
+    // Send message to recipient
+    if (partnerSocketId) {
       io.to(partnerSocketId).emit('chat-message', messageObj);
+    }
+
+    // Echo back to sender so both sides have identical message (including replyToId)
+    if (senderSocketId && senderSocketId !== partnerSocketId) {
+      io.to(senderSocketId).emit('chat-message', messageObj);
     }
   });
   

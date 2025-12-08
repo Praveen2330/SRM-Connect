@@ -265,10 +265,10 @@ export default function Profile() {
   return (
     <div className="min-h-screen bg-black text-white">
       <div className="container mx-auto px-4 py-8">
-        {/* Back Button */}
+        {/* Back Navigation */}
         <button
           onClick={() => navigate('/dashboard')}
-          className="mb-6 p-2 hover:bg-zinc-900 rounded-full transition-colors"
+          className="absolute top-4 left-4 p-2 bg-zinc-900/50 backdrop-blur-sm border border-zinc-700 rounded-full hover:bg-zinc-800 transition-colors"
           aria-label="Back to Dashboard"
         >
           <ArrowLeft className="w-6 h-6" />

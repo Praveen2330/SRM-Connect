@@ -2,9 +2,16 @@ import { useEffect, useState, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
 import socketIO from 'socket.io-client';
-import { 
-  Send, RefreshCw, Flag, ThumbsUp, X, Clock, 
-  Shield, Eye, EyeOff
+import {
+  Send,
+  RefreshCw,
+  Flag,
+  ThumbsUp,
+  X,
+  Clock,
+  Shield,
+  Eye,
+  EyeOff,
 } from 'lucide-react';
 
 import { toast } from 'react-hot-toast';
@@ -13,7 +20,7 @@ import { toast } from 'react-hot-toast';
 const SOCKET_URL =
   import.meta.env.MODE === 'production'
     ? 'https://srm-connect-socketio.onrender.com'
-    : (import.meta.env.VITE_SOCKET_SERVER_URL || 'http://localhost:3002');
+    : import.meta.env.VITE_SOCKET_SERVER_URL || 'http://localhost:3002';
 
 interface ChatMessage {
   id: string;
@@ -21,6 +28,8 @@ interface ChatMessage {
   senderId: string;
   timestamp: number;
   senderName?: string;
+  // NEW: for reply support
+  replyToId?: string;
 }
 
 interface Profile {
@@ -48,11 +57,15 @@ export default function InstantChat() {
   const [connectionAccepted, setConnectionAccepted] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [activeUsers, setActiveUsers] = useState<number>(0);
-  
+
+  // NEW: reply target
+  const [replyTo, setReplyTo] = useState<ChatMessage | null>(null);
+
   const socketRef = useRef<any>(null);
   const chatSessionIdRef = useRef<string | null>(null);
   const timerRef = useRef<any>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const touchStartXRef = useRef<number | null>(null);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -60,7 +73,9 @@ export default function InstantChat() {
 
   useEffect(() => {
     const fetchCurrentUser = async () => {
-      const { data: { session } } = await supabase.auth.getSession();
+      const {
+        data: { session },
+      } = await supabase.auth.getSession();
       if (session?.user) {
         setCurrentUser(session.user);
         fetchUserProfile(session.user.id);
@@ -79,6 +94,7 @@ export default function InstantChat() {
       }
     };
   }, [navigate]);
+
   const fetchUserProfile = async (userId: string) => {
     try {
       const { data, error } = await supabase
@@ -99,6 +115,7 @@ export default function InstantChat() {
       console.error('Error fetching profile:', error);
     }
   };
+
   useEffect(() => {
     const setupSocket = async () => {
       if (!currentUser) return;
@@ -118,15 +135,17 @@ export default function InstantChat() {
           reconnectionDelay: 1000,
           timeout: 20000,
           autoConnect: true,
-          forceNew: true
+          forceNew: true,
         });
+
         socketRef.current.on('connect', () => {
           console.log('Connected to instant chat server');
           toast.success('Connected to chat server');
           setError(null);
-          
+
           socketRef.current.emit('get_active_users');
         });
+
         socketRef.current.on('active_users_count', (count: number) => {
           console.log('Active users count:', count);
           setActiveUsers(count);
@@ -134,27 +153,35 @@ export default function InstantChat() {
 
         socketRef.current.on('connect_error', (error: any) => {
           console.error('Socket connection error:', error);
-          setError('Failed to connect to chat server. Please try again later.');
+          setError(
+            'Failed to connect to chat server. Please try again later.',
+          );
         });
+
         socketRef.current.on('match-found', (data: any) => {
           setIsSearching(false);
           setPartner({
             id: data.partnerId,
-            display_name: data.partnerProfile?.display_name || 'Anonymous User',
-            avatar_url: data.partnerProfile?.avatar_url
+            display_name:
+              data.partnerProfile?.display_name || 'Anonymous User',
+            avatar_url: data.partnerProfile?.avatar_url,
           });
           chatSessionIdRef.current = data.sessionId;
+
           if (data.timerSeconds) {
-            const endTime = Date.now() + (data.timerSeconds * 1000);
-            
+            const endTime = Date.now() + data.timerSeconds * 1000;
+
             if (timerRef.current) {
               clearInterval(timerRef.current);
             }
-            
+
             timerRef.current = setInterval(() => {
-              const remaining = Math.max(0, Math.floor((endTime - Date.now()) / 1000));
+              const remaining = Math.max(
+                0,
+                Math.floor((endTime - Date.now()) / 1000),
+              );
               setRemainingTime(remaining);
-              
+
               if (remaining <= 0) {
                 clearInterval(timerRef.current);
                 toast('Chat time expired');
@@ -162,65 +189,92 @@ export default function InstantChat() {
               }
             }, 1000);
           }
-          setMessages([{
-            id: 'system-connected',
-            content: `You are now chatting with ${data.partnerProfile?.display_name || 'a new user'}`,
-            senderId: 'system',
-            timestamp: Date.now()
-          }]);
+
+          setReplyTo(null);
+          setMessages([
+            {
+              id: 'system-connected',
+              content: `You are now chatting with ${
+                data.partnerProfile?.display_name || 'a new user'
+              }`,
+              senderId: 'system',
+              timestamp: Date.now(),
+            },
+          ]);
         });
+
         socketRef.current.on('no-match-found', () => {
           setIsSearching(false);
           toast.error('No chat partners available. Please try again later.');
         });
+
         socketRef.current.on('chat-message', (message: any) => {
-          setMessages(prev => [...prev, {
-            id: message.id,
-            content: message.message,
-            senderId: message.from,
-            timestamp: message.timestamp,
-            senderName: message.senderName
-          }]);
+          // message.replyToId is optional, server may or may not send it
+          setMessages((prev) => [
+            ...prev,
+            {
+              id: message.id,
+              content: message.message,
+              senderId: message.from,
+              timestamp: message.timestamp,
+              senderName: message.senderName,
+              replyToId: message.replyToId || undefined,
+            },
+          ]);
         });
+
         socketRef.current.on('chat-ended', (data: any) => {
           toast(data.reason || 'Chat ended');
           setPartner(null);
-          
+          setReplyTo(null);
+
           if (timerRef.current) {
             clearInterval(timerRef.current);
             setRemainingTime(null);
           }
-          
-          setMessages(prev => [...prev, {
-            id: 'system-ended',
-            content: 'Chat ended',
-            senderId: 'system',
-            timestamp: Date.now()
-          }]);
+
+          setMessages((prev) => [
+            ...prev,
+            {
+              id: 'system-ended',
+              content: 'Chat ended',
+              senderId: 'system',
+              timestamp: Date.now(),
+            },
+          ]);
         });
+
         socketRef.current.on('partner-disconnected', () => {
           toast('Your chat partner disconnected');
           setPartner(null);
-          
+          setReplyTo(null);
+
           if (timerRef.current) {
             clearInterval(timerRef.current);
             setRemainingTime(null);
           }
-          
-          setMessages(prev => [...prev, {
-            id: 'system-disconnected',
-            content: 'Your chat partner disconnected',
-            senderId: 'system',
-            timestamp: Date.now()
-          }]);
+
+          setMessages((prev) => [
+            ...prev,
+            {
+              id: 'system-disconnected',
+              content: 'Your chat partner disconnected',
+              senderId: 'system',
+              timestamp: Date.now(),
+            },
+          ]);
         });
+
         socketRef.current.on('report-received', (data: any) => {
           if (data.success) {
             toast.success('Report submitted successfully');
           } else {
-            toast.error(`Failed to submit report: ${data.error || 'Unknown error'}`);
+            toast.error(
+              `Failed to submit report: ${data.error || 'Unknown error'}`,
+            );
           }
         });
+
         socketRef.current.on('connection-request', () => {
           setShowConnectionRequest(true);
         });
@@ -233,7 +287,6 @@ export default function InstantChat() {
         socketRef.current.on('connection-rejected', () => {
           toast.error('Connection request rejected');
         });
-
       } catch (error: any) {
         console.error('Error setting up socket:', error);
         setError(`Failed to initialize chat connection: ${error.message}`);
@@ -242,6 +295,7 @@ export default function InstantChat() {
 
     setupSocket();
   }, [currentUser]);
+
   const findChatPartner = () => {
     if (!socketRef.current) {
       toast.error('Not connected to chat server');
@@ -253,43 +307,64 @@ export default function InstantChat() {
     setMessages([]);
     setConnectionRequested(false);
     setConnectionAccepted(false);
+    setReplyTo(null);
+
     socketRef.current.emit('join_instant_chat_queue', {
       userId: currentUser.id,
-      displayName: anonymousMode ? 'Anonymous User' : (userProfile?.display_name || currentUser.email),
-      preferences: {}
+      displayName: anonymousMode
+        ? 'Anonymous User'
+        : userProfile?.display_name || currentUser.email,
+      preferences: {},
     });
-    
+
     toast('Looking for a chat partner...');
   };
+
   const sendMessage = () => {
     if (!newMessage.trim() || !socketRef.current || !partner) return;
-    
-    const messageId = `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
-    const messageObj = {
+    if (!currentUser) return;
+
+    const messageId = `${Date.now()}-${Math.random()
+      .toString(36)
+      .substr(2, 9)}`;
+    const messageObj: ChatMessage = {
       id: messageId,
       content: newMessage,
       senderId: currentUser.id,
       timestamp: Date.now(),
-      senderName: anonymousMode ? 'Anonymous' : (userProfile?.display_name || 'You')
+      senderName: anonymousMode
+        ? 'Anonymous'
+        : userProfile?.display_name || 'You',
+      replyToId: replyTo ? replyTo.id : undefined,
     };
-    setMessages(prev => [...prev, messageObj]);
+
+    setMessages((prev) => [...prev, messageObj]);
+
     socketRef.current.emit('chat-message', {
+      id: messageId,
       message: newMessage,
       to: partner.id,
       from: currentUser.id,
-      senderName: anonymousMode ? 'Anonymous' : (userProfile?.display_name || 'User')
+      senderName: anonymousMode
+        ? 'Anonymous'
+        : userProfile?.display_name || 'User',
+      replyToId: replyTo ? replyTo.id : null,
     });
+
     setNewMessage('');
+    setReplyTo(null);
   };
+
   const endChat = () => {
     if (!socketRef.current || !partner) return;
-    
+
     socketRef.current.emit('end-chat', {
-      partnerId: partner.id
+      partnerId: partner.id,
     });
-    
+
     setPartner(null);
-    
+    setReplyTo(null);
+
     if (timerRef.current) {
       clearInterval(timerRef.current);
       setRemainingTime(null);
@@ -300,10 +375,12 @@ export default function InstantChat() {
       }
     }, 500);
   };
+
   const skipAndFindNew = () => {
     endChat();
     findChatPartner();
   };
+
   const reportPartner = async () => {
     if (!socketRef.current || !partner) {
       toast.error('Cannot report: No active chat');
@@ -312,10 +389,10 @@ export default function InstantChat() {
     const loadingToast = toast.loading('Submitting report...');
 
     try {
-      const simpleTranscript = messages.map(msg => (
-        `${msg.senderName || 'User'}: ${msg.content}`
-      ));
-      
+      const simpleTranscript = messages.map(
+        (msg) => `${msg.senderName || 'User'}: ${msg.content}`,
+      );
+
       console.log('Sending report via Socket.IO...');
       socketRef.current.emit('report-user', {
         reporterId: currentUser.id,
@@ -324,7 +401,7 @@ export default function InstantChat() {
         reason: reportReason,
         description: reportDescription,
         transcript: simpleTranscript,
-        timestamp: new Date().toISOString()
+        timestamp: new Date().toISOString(),
       });
       const reportPromise = new Promise((resolve, reject) => {
         const timeout = setTimeout(() => {
@@ -349,37 +426,41 @@ export default function InstantChat() {
     } catch (error: any) {
       toast.dismiss(loadingToast);
       console.error('Error submitting report:', error);
-      toast.error('Failed to submit report: ' + (error.message || 'Unknown error'));
+      toast.error(
+        'Failed to submit report: ' + (error.message || 'Unknown error'),
+      );
     }
   };
+
   const requestConnection = () => {
     if (!socketRef.current || !partner) return;
-    
+
     socketRef.current.emit('connection-request', {
-      to: partner.id
+      to: partner.id,
     });
-    
+
     setConnectionRequested(true);
     toast('Connection request sent');
   };
+
   const acceptConnection = async () => {
     if (!socketRef.current || !partner) return;
-    
+
     try {
       try {
-        await supabase
-          .from('chat_connections')
-          .insert([{
+        await supabase.from('chat_connections').insert([
+          {
             user1_id: currentUser.id,
-            user2_id: partner.id
-          }]);
+            user2_id: partner.id,
+          },
+        ]);
       } catch (error) {
         console.error('Error saving connection to database:', error);
       }
       socketRef.current.emit('connection-accepted', {
-        to: partner.id
+        to: partner.id,
       });
-      
+
       setConnectionAccepted(true);
       setShowConnectionRequest(false);
       toast.success('Connection accepted!');
@@ -388,17 +469,17 @@ export default function InstantChat() {
       toast.error('Failed to accept connection');
     }
   };
+
   const rejectConnection = () => {
     if (!socketRef.current || !partner) return;
-    
+
     socketRef.current.emit('connection-rejected', {
-      to: partner.id
+      to: partner.id,
     });
-    
+
     setShowConnectionRequest(false);
     toast('Connection request rejected');
   };
-
 
   const formatTime = (seconds: number) => {
     const mins = Math.floor(seconds / 60);
@@ -408,12 +489,11 @@ export default function InstantChat() {
 
   return (
     <div className="min-h-screen bg-black text-white flex flex-col">
-
       <header className="bg-zinc-900 p-4 flex items-center justify-between">
         <div className="flex items-center">
           <h1 className="text-xl font-bold mr-4">Instant Chat</h1>
           <div className="bg-indigo-900/40 px-3 py-1 rounded-full flex items-center text-sm">
-            <span className="inline-block w-2 h-2 rounded-full bg-green-500 mr-2"></span>
+            <span className="inline-block w-2 h-2 rounded-full bg-green-500 mr-2" />
             <span>{activeUsers} active users</span>
           </div>
         </div>
@@ -435,31 +515,34 @@ export default function InstantChat() {
           </button>
         </div>
       </header>
-      
-      <div className="flex-grow flex flex-col p-4 max-w-6xl mx-auto w-full">
 
+      <div className="flex-grow flex flex-col p-4 max-w-6xl mx-auto w-full">
         <div className="bg-zinc-900 p-3 rounded-lg mb-4 flex items-center justify-between">
           <div className="flex items-center">
             <div className="mr-3">
               {partner ? (
                 <div className="flex items-center">
-                  <div className={`w-3 h-3 rounded-full mr-2 ${error ? 'bg-red-500' : 'bg-green-500'}`}></div>
+                  <div
+                    className={`w-3 h-3 rounded-full mr-2 ${
+                      error ? 'bg-red-500' : 'bg-green-500'
+                    }`}
+                  />
                   <span>Chatting with: {partner.display_name}</span>
                 </div>
               ) : isSearching ? (
                 <div className="flex items-center">
-                  <div className="w-3 h-3 rounded-full bg-yellow-500 mr-2"></div>
+                  <div className="w-3 h-3 rounded-full bg-yellow-500 mr-2" />
                   <span>Finding a chat partner...</span>
                 </div>
               ) : (
                 <div className="flex items-center">
-                  <div className="w-3 h-3 rounded-full bg-gray-500 mr-2"></div>
+                  <div className="w-3 h-3 rounded-full bg-gray-500 mr-2" />
                   <span>Not connected</span>
                 </div>
               )}
             </div>
           </div>
-          
+
           <div className="flex items-center space-x-3">
             {remainingTime !== null && (
               <div className="flex items-center text-sm">
@@ -467,32 +550,32 @@ export default function InstantChat() {
                 <span>{formatTime(remainingTime)}</span>
               </div>
             )}
-            
+
             <button
               onClick={() => setAnonymousMode(!anonymousMode)}
               className="p-2 text-gray-400 hover:text-white rounded-full"
-              title={anonymousMode ? "Anonymous mode on" : "Anonymous mode off"}
+              title={anonymousMode ? 'Anonymous mode on' : 'Anonymous mode off'}
             >
               {anonymousMode ? <EyeOff size={16} /> : <Eye size={16} />}
             </button>
           </div>
         </div>
-        
+
         {error && (
           <div className="bg-red-900/50 border border-red-700 p-3 rounded-lg mb-4">
             <p className="text-red-300">{error}</p>
           </div>
         )}
-        
-        <div className="flex-grow bg-zinc-900 rounded-lg mb-4 overflow-hidden flex flex-col">
 
+        <div className="flex-grow bg-zinc-900 rounded-lg mb-4 overflow-hidden flex flex-col">
           <div className="flex-grow p-4 overflow-y-auto">
             {messages.length === 0 && !isSearching && (
               <div className="h-full flex flex-col items-center justify-center text-center p-6">
                 <Shield size={48} className="text-zinc-700 mb-4" />
                 <h3 className="text-xl font-bold mb-2">Instant Chat</h3>
                 <p className="text-zinc-400 mb-6 max-w-md">
-                  Connect with other users for a quick chat. Be respectful and follow our community guidelines.
+                  Connect with other users for a quick chat. Be respectful and
+                  follow our community guidelines.
                 </p>
                 <button
                   onClick={findChatPartner}
@@ -502,46 +585,135 @@ export default function InstantChat() {
                 </button>
               </div>
             )}
-            
+
             {isSearching && messages.length === 0 && (
               <div className="h-full flex flex-col items-center justify-center text-center p-6">
-                <div className="animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-indigo-500 mb-4"></div>
-                <p className="text-zinc-300">Looking for someone to chat with...</p>
+                <div className="animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-indigo-500 mb-4" />
+                <p className="text-zinc-300">
+                  Looking for someone to chat with...
+                </p>
               </div>
             )}
-            
+
             {messages.length > 0 && (
               <div className="space-y-3">
-                {messages.map((message) => (
-                  <div
-                    key={message.id}
-                    className={`flex ${message.senderId === currentUser?.id ? 'justify-end' : message.senderId === 'system' ? 'justify-center' : 'justify-start'}`}
-                  >
-                    {message.senderId === 'system' ? (
-                      <div className="bg-zinc-800 px-3 py-1 rounded-full text-sm text-zinc-400">
-                        {message.content}
-                      </div>
-                    ) : (
-                      <div
-                        className={`max-w-[80%] rounded-lg px-4 py-2 ${
-                          message.senderId === currentUser?.id
-                            ? 'bg-indigo-600 text-white'
-                            : 'bg-zinc-800 text-white'
-                        }`}
-                      >
-                        {message.senderId !== currentUser?.id && message.senderName && (
-                          <div className="text-xs text-zinc-400 mb-1">{message.senderName}</div>
-                        )}
-                        <p>{message.content}</p>
-                      </div>
-                    )}
-                  </div>
-                ))}
+                {messages.map((message) => {
+                  const isMine = message.senderId === currentUser?.id;
+                  const isSystem = message.senderId === 'system';
+                  const repliedMessage = message.replyToId
+                    ? messages.find((m) => m.id === message.replyToId)
+                    : undefined;
+
+                  const handleTouchStart = (
+                    e: React.TouchEvent<HTMLDivElement>,
+                  ) => {
+                    if (isSystem) return;
+                    touchStartXRef.current = e.touches[0].clientX;
+                  };
+
+                  const handleTouchMove = (
+                    e: React.TouchEvent<HTMLDivElement>,
+                  ) => {
+                    if (isSystem) return;
+                    if (touchStartXRef.current === null) return;
+                    const diff =
+                      e.touches[0].clientX - touchStartXRef.current;
+
+                    // swipe right
+                    if (diff > 70) {
+                      touchStartXRef.current = null;
+                      setReplyTo(message);
+                    }
+                  };
+
+                  const handleTouchEnd = () => {
+                    touchStartXRef.current = null;
+                  };
+
+                  return (
+                    <div
+                      key={message.id}
+                      className={`flex ${
+                        isMine
+                          ? 'justify-end'
+                          : isSystem
+                          ? 'justify-center'
+                          : 'justify-start'
+                      }`}
+                      onTouchStart={handleTouchStart}
+                      onTouchMove={handleTouchMove}
+                      onTouchEnd={handleTouchEnd}
+                    >
+                      {isSystem ? (
+                        <div className="bg-zinc-800 px-3 py-1 rounded-full text-sm text-zinc-400">
+                          {message.content}
+                        </div>
+                      ) : (
+                        <div className="relative max-w-[80%]">
+                          <div
+                            className={`w-full rounded-lg px-4 py-2 ${
+                              isMine
+                                ? 'bg-indigo-600 text-white'
+                                : 'bg-zinc-800 text-white'
+                            }`}
+                          >
+                            {/* quoted message preview if this is a reply */}
+                            {repliedMessage && (
+                              <div className="mb-1 px-2 py-1 rounded-md bg-zinc-900/70 text-xs text-gray-300 border-l-2 border-indigo-400">
+                                <span className="line-clamp-1">
+                                  {repliedMessage.content}
+                                </span>
+                              </div>
+                            )}
+
+                            {message.senderId !== currentUser?.id &&
+                              message.senderName && (
+                                <div className="text-xs text-zinc-400 mb-1">
+                                  {message.senderName}
+                                </div>
+                              )}
+                            <p>{message.content}</p>
+                          </div>
+
+                          {/* desktop reply icon */}
+                          <button
+                            type="button"
+                            onClick={() => setReplyTo(message)}
+                            className="absolute -top-3 right-1 text-xs text-zinc-400 hover:text-white hidden sm:block"
+                          >
+                            ↩
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
                 <div ref={messagesEndRef} />
               </div>
             )}
           </div>
-          
+
+          {/* Reply banner above input */}
+          {partner && replyTo && (
+            <div className="px-4 pb-1 border-t border-zinc-800">
+              <div className="flex items-center justify-between px-3 py-2 rounded-lg bg-zinc-900 border border-zinc-700">
+                <div className="mr-3">
+                  <div className="text-xs text-indigo-400">Replying to</div>
+                  <div className="text-xs text-gray-200 line-clamp-1">
+                    {replyTo.content}
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setReplyTo(null)}
+                  className="text-xs text-gray-400 hover:text-gray-200"
+                >
+                  ✕
+                </button>
+              </div>
+            </div>
+          )}
+
           {partner && (
             <div className="p-3 border-t border-zinc-800">
               <div className="flex">
@@ -563,7 +735,7 @@ export default function InstantChat() {
               </div>
             </div>
           )}
-          
+
           {partner && (
             <div className="p-3 border-t border-zinc-800 flex justify-between">
               <div>
@@ -575,7 +747,7 @@ export default function InstantChat() {
                   End Chat
                 </button>
               </div>
-              
+
               <div className="flex space-x-2">
                 <button
                   onClick={skipAndFindNew}
@@ -585,8 +757,6 @@ export default function InstantChat() {
                   Skip
                 </button>
 
-
-                
                 <button
                   onClick={requestConnection}
                   disabled={connectionRequested || connectionAccepted}
@@ -606,7 +776,7 @@ export default function InstantChat() {
               </div>
             </div>
           )}
-          
+
           {!partner && !isSearching && (
             <div className="p-3 border-t border-zinc-800">
               <button
@@ -617,7 +787,7 @@ export default function InstantChat() {
               </button>
             </div>
           )}
-          
+
           {isSearching && !partner && (
             <div className="p-3 border-t border-zinc-800">
               <button
@@ -630,7 +800,7 @@ export default function InstantChat() {
           )}
         </div>
       </div>
-      
+
       {showReportModal && (
         <div className="fixed inset-0 bg-black bg-opacity-75 flex items-center justify-center z-50 p-4">
           <div className="bg-zinc-900 rounded-xl p-6 max-w-md w-full">
@@ -638,9 +808,11 @@ export default function InstantChat() {
               <Shield size={24} className="mr-2" />
               <h3 className="text-xl font-bold">Report User</h3>
             </div>
-            
+
             <div className="mb-6">
-              <label className="block text-sm font-medium mb-2">Reason for report</label>
+              <label className="block text-sm font-medium mb-2">
+                Reason for report
+              </label>
               <select
                 value={reportReason}
                 onChange={(e) => setReportReason(e.target.value)}
@@ -653,9 +825,11 @@ export default function InstantChat() {
                 <option value="Other">Other</option>
               </select>
             </div>
-            
+
             <div className="mb-6">
-              <label className="block text-sm font-medium mb-2">Description (optional)</label>
+              <label className="block text-sm font-medium mb-2">
+                Description (optional)
+              </label>
               <textarea
                 value={reportDescription}
                 onChange={(e) => setReportDescription(e.target.value)}
@@ -663,7 +837,7 @@ export default function InstantChat() {
                 placeholder="Please provide additional details..."
               />
             </div>
-            
+
             <div className="flex justify-end gap-3">
               <button
                 onClick={() => setShowReportModal(false)}
@@ -682,12 +856,16 @@ export default function InstantChat() {
           </div>
         </div>
       )}
+
       {showConnectionRequest && (
         <div className="fixed inset-0 bg-black bg-opacity-75 flex items-center justify-center z-50 p-4">
           <div className="bg-zinc-900 rounded-xl p-6 max-w-md w-full">
             <h3 className="text-xl font-bold mb-4">Connection Request</h3>
-            <p className="mb-6">Your chat partner would like to connect with you. Accepting will allow you to find each other later.</p>
-            
+            <p className="mb-6">
+              Your chat partner would like to connect with you. Accepting will
+              allow you to find each other later.
+            </p>
+
             <div className="flex justify-end gap-3">
               <button
                 onClick={rejectConnection}
