@@ -35,10 +35,7 @@ const allowedOrigins =
         : [
             'https://srmconnect2025.vercel.app',
             'https://srm-connect.vercel.app',
-            // Allow local development frontends to connect to the Render socket server
-            'http://localhost:3000',
-            'http://localhost:5173',
-            'http://localhost:5174',
+            'https://srm-connect-praveen2330.vercel.app',
           ])
     : [
         'http://localhost:3000',
@@ -48,7 +45,14 @@ const allowedOrigins =
 
 const io = new Server(server, {
   cors: {
-    origin: allowedOrigins,
+    origin: (origin, callback) => {
+      // Allow non-browser clients (no origin) and any origin in our allowed list
+      if (!origin || allowedOrigins.includes(origin)) {
+        return callback(null, true);
+      }
+      console.warn(`Socket.IO CORS blocked origin: ${origin}`);
+      return callback(new Error('Not allowed by CORS'));
+    },
     methods: ['GET', 'POST'],
     credentials: true,
     allowedHeaders: ['*'],
