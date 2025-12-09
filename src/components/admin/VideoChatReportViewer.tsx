@@ -35,7 +35,7 @@ const VideoChatReportViewer: React.FC<VideoChatReportViewerProps> = ({
 
   useEffect(() => {
     fetchReports();
-  }, [filterStatus]);
+  }, []);   // run once ONLY
 
   useEffect(() => {
     if (updateCount) {

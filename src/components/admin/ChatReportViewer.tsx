@@ -2,11 +2,8 @@ import React, { useState, useEffect, useRef } from 'react';
 import socketIO from 'socket.io-client';
 import { Shield, AlertTriangle, CheckCircle, XCircle, RefreshCw } from 'lucide-react';
 
-// Choose Socket.IO server based on environment
-const SOCKET_URL =
-  import.meta.env.MODE === 'production'
-    ? 'https://srm-connect-socketio.onrender.com'
-    : (import.meta.env.VITE_SOCKET_URL || 'https://srm-connect-socketio.onrender.com');
+// Always connect to production socket server
+const SOCKET_URL = 'https://srm-connect-socketio.onrender.com';
 
 interface ChatReport {
   id: string;
