@@ -20,12 +20,6 @@ function Login() {
     setLoading(true);
     setError(null);
 
-    if (!email.endsWith('@srmist.edu.in')) {
-      setError('Please use your SRM email address (@srmist.edu.in)');
-      setLoading(false);
-      return;
-    }
-
     try {
       // Sign in the user
       const { data: authData, error: signInError } = await supabase.auth.signInWithPassword({
@@ -219,7 +213,7 @@ function Login() {
                 placeholder="your.name@srmist.edu.in"
                 className="w-full bg-black border border-zinc-700 rounded-lg py-2 pl-10 pr-4 focus:outline-none focus:border-white"
                 required
-                pattern=".+@srmist\.edu\.in"
+                pattern={isSignUp ? ".+@srmist\\.edu\\.in" : undefined}
                 disabled={loading}
               />
             </div>
