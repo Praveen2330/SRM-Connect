@@ -3,7 +3,6 @@ import { useNavigate } from 'react-router-dom';
 import io from 'socket.io-client';
 import { useAuth } from '../contexts/AuthContext';
 import { supabase } from '../lib/supabase';
-import { FileX2 } from 'lucide-react';
 
 // Define UserProfile interface as it's missing from types
 interface UserProfile {
@@ -92,7 +91,6 @@ const VideoChat = (): JSX.Element => {
   const localStreamRef = useRef<MediaStream | null>(null);
   const remoteVideoRef = useRef<HTMLVideoElement | null>(null);
   const localVideoRef = useRef<HTMLVideoElement | null>(null);
-  const mountTimeRef = useRef<number>(Date.now()); // Track when component mounted
   const sessionIdRef = useRef<string | null>(null);
   const sessionStartTimeRef = useRef<string | null>(null);
   
@@ -109,6 +107,7 @@ const VideoChat = (): JSX.Element => {
   const [reportReason, setReportReason] = useState('');
   const [reportSuccess, setReportSuccess] = useState<boolean | null>(null);
   const [isReportSubmitting, setIsReportSubmitting] = useState(false);
+  const [isRemoteMuted, setIsRemoteMuted] = useState(true);
   const [intentionalDisconnect, setIntentionalDisconnect] = useState(false);
   const [reconnectionAttempts, setReconnectionAttempts] = useState(0);
   const [connectionState, setConnectionState] = useState<'idle' | 'waiting' | 'connecting' | 'connected' | 'disconnected' | 'failed'>('idle');
@@ -639,6 +638,23 @@ const VideoChat = (): JSX.Element => {
         console.log('[ontrack] Setting remote video srcObject');
         videoEl.srcObject = remoteStream;
       }
+      // Debug dump: receivers, transceivers, and a quick stats snapshot
+      try {
+        console.debug('[ontrack] pc receivers', pc.getReceivers());
+        console.debug('[ontrack] pc transceivers', pc.getTransceivers());
+        (async () => {
+          try {
+            const stats = await pc.getStats();
+            const reports = [] as any[];
+            stats.forEach((r) => reports.push(r));
+            console.debug('[ontrack] pc.getStats snapshot', reports.filter(r => r.type && r.type.startsWith('inbound')));
+          } catch (e) {
+            console.warn('[ontrack] failed to getStats', e);
+          }
+        })();
+      } catch (e) {
+        console.warn('[ontrack] debug dump failed', e);
+      }
 
       const attemptPlay = () => {
         console.log('[ontrack] attempting remote video play()');
@@ -695,6 +711,16 @@ const VideoChat = (): JSX.Element => {
 
       if (pc.connectionState === 'connected') {
         console.log('Peer connection established successfully');
+        if (remoteVideoRef.current) {
+          console.log('[connection] Auto-unmuting remote video');
+          remoteVideoRef.current.muted = false;
+          setIsRemoteMuted(false);
+    
+          remoteVideoRef.current
+            .play()
+            .then(() => console.log('[connection] Remote video playing'))
+            .catch((e) => console.warn('[connection] play blocked', e));
+        }
         setError(null);
 
         // After connection is established, try to ensure remote video is playing
@@ -719,7 +745,7 @@ const VideoChat = (): JSX.Element => {
 
     peerConnectionRef.current = pc;
     return pc;
-  }, [socket, partnerProfile, user]);
+  }, [socket, partnerProfile, user, isRemoteMuted]);
 
   // When we obtain a local stream after the peer connection has been created,
   // make sure its tracks are added to the connection.
@@ -903,7 +929,25 @@ const VideoChat = (): JSX.Element => {
 
     const handleOffer = async (data: any) => {
       try {
+        console.log('[offer] Waiting for local stream before processing remote offer');
+    
+        // Wait up to 5 seconds for local camera stream
+        const waitForLocalStream = async (timeoutMs = 5000) => {
+          const start = Date.now();
+          while (!localStreamRef.current && Date.now() - start < timeoutMs) {
+            // eslint-disable-next-line no-await-in-loop
+            await new Promise((r) => setTimeout(r, 100));
+          }
+          return !!localStreamRef.current;
+        };
+    
+        const hasLocal = await waitForLocalStream(5000);
+        if (!hasLocal) {
+          console.warn('[offer] Local stream not ready after wait — continuing anyway');
+        }
+    
         const pc = setupPeerConnection();
+        if (!pc) return;
         if (!pc || !socket) return;
         const offerDescription = data.offer;
         await pc.setRemoteDescription(new RTCSessionDescription(offerDescription));
@@ -1200,6 +1244,7 @@ const VideoChat = (): JSX.Element => {
         <h1 className="text-2xl font-bold bg-gradient-to-r from-blue-400 to-purple-500 text-transparent bg-clip-text">
           SRM Connect
         </h1>
+        <span className="ml-4 text-sm text-gray-400">Status: {connectionState}</span>
         <div className="flex space-x-3">
           <button
             onClick={() => navigate('/dashboard')}
@@ -1289,42 +1334,6 @@ const VideoChat = (): JSX.Element => {
                 <div className="absolute bottom-3 left-3 bg-black bg-opacity-50 px-2 py-1 rounded-md text-sm">
                   You
                 </div>
-                <button
-                  onClick={() => {
-                    if (localVideoRef.current) {
-                      console.log('Manual play button clicked');
-                      localVideoRef.current
-                        .play()
-                        .then(() => console.log('Local video playing after manual click'))
-                        .catch((e) =>
-                          console.error('Error playing local video after manual click:', e)
-                        );
-                    }
-                  }}
-                  className="absolute top-3 right-3 bg-blue-600 hover:bg-blue-700 text-white p-2 rounded-full"
-                  title="Restart video"
-                >
-                  <svg
-                    xmlns="http://www.w3.org/2000/svg"
-                    className="h-5 w-5"
-                    fill="none"
-                    viewBox="0 0 24 24"
-                    stroke="currentColor"
-                  >
-                    <path
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                      strokeWidth={2}
-                      d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z"
-                    />
-                    <path
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                      strokeWidth={2}
-                      d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"
-                    />
-                  </svg>
-                </button>
               </>
             ) : (
               <div className="flex flex-col items-center justify-center">
@@ -1348,64 +1357,27 @@ const VideoChat = (): JSX.Element => {
           </div>
           <div
             className="aspect-video bg-black rounded-lg overflow-hidden flex items-center justify-center relative shadow-lg border border-gray-800 video-container"
-            style={{ display: 'flex' }} // Always display the container
+            style={{ display: 'flex' }}
           >
-            {remoteStream ? (
-              <>
-                <video
-                  key={partnerProfile?.id || 'remote-video'}
-                  ref={remoteVideoRef}
-                  autoPlay
-                  playsInline
-                  controls={false}
-                  className="w-full h-full object-cover"
-                  style={{ backgroundColor: '#111', display: 'block', width: '100%', height: '100%' }}
-                />
-                <div className="absolute bottom-3 left-3 bg-black bg-opacity-50 px-2 py-1 rounded-md text-sm">
-                  {partnerProfile ? partnerProfile.display_name || partnerProfile.name : 'Partner'}
-                </div>
-                <button
-                  onClick={() => {
-                    if (remoteVideoRef.current) {
-                      console.log('Manual play button clicked for remote video');
-                      remoteVideoRef.current
-                        .play()
-                        .then(() => console.log('Remote video playing after manual click'))
-                        .catch((e) =>
-                          console.error('Error playing remote video after manual click:', e)
-                        );
-                    }
-                  }}
-                  className="absolute top-3 right-3 bg-blue-600 hover:bg-blue-700 text-white p-2 rounded-full"
-                  title="Restart video"
-                >
-                  <svg
-                    xmlns="http://www.w3.org/2000/svg"
-                    className="h-5 w-5"
-                    fill="none"
-                    viewBox="0 0 24 24"
-                    stroke="currentColor"
-                  >
-                    <path
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                      strokeWidth={2}
-                      d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z"
-                    />
-                    <path
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                      strokeWidth={2}
-                      d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"
-                    />
-                  </svg>
-                </button>
-              </>
-            ) : (
-              <div className="flex flex-col items-center justify-center">
+            {/* Always present video element so pc.ontrack can attach immediately */}
+            <video
+              id="remoteVideo"
+              key={partnerProfile?.id || 'remote-video'}
+              ref={remoteVideoRef}
+              autoPlay
+              playsInline
+              muted={isRemoteMuted}
+              controls={false}
+              className="w-full h-full object-cover"
+              style={{ backgroundColor: '#111', display: 'block', width: '100%', height: '100%' }}
+            />
+
+            {/* Overlay UI shown only when no remote stream is available yet */}
+            {!remoteStream && (
+              <div className="absolute inset-0 flex flex-col items-center justify-center bg-black bg-opacity-50">
                 <svg
                   xmlns="http://www.w3.org/2000/svg"
-                  className="h-16 w-16 text-gray-500 mb-2"
+                  className="h-16 w-16 text-gray-300 mb-2"
                   fill="none"
                   viewBox="0 0 24 24"
                   stroke="currentColor"
@@ -1417,11 +1389,16 @@ const VideoChat = (): JSX.Element => {
                     d="M17 8h2a2 2 0 012 2v6a2 2 0 01-2 2h-2v4l-4-4H9a1.994 1.994 0 01-1.414-.586m0 0L11 14h4a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2v4l.586-.586z"
                   />
                 </svg>
-                <p className="text-gray-400">
+                <p className="text-gray-200">
                   {isMatching ? 'Finding a match...' : 'Waiting for a peer...'}
                 </p>
               </div>
             )}
+
+            {/* Info overlay and manual play/unmute controls */}
+            <div className="absolute bottom-3 left-3 bg-black bg-opacity-50 px-2 py-1 rounded-md text-sm">
+              {partnerProfile ? partnerProfile.display_name || partnerProfile.name : 'Partner'}
+            </div>
           </div>
         </div>
 

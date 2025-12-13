@@ -634,7 +634,14 @@ function matchUsers() {
     // Get the two users who have been waiting the longest
     const user1 = userQueue.shift();
     const user2 = userQueue.shift();
-    
+    if (
+      user1.userId === user2.userId ||
+      (user1.email && user2.email && user1.email === user2.email)
+    ) {
+      console.warn('❌ Prevented self-match:', user1.userId);
+      userQueue.unshift(user2);
+      return;
+    }
     const matchId = uuidv4();
     
     // Store the match

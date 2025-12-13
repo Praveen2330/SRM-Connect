@@ -1,11 +1,46 @@
-import React, { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { User, Moon, Sun, Book, LogOut } from 'lucide-react';
 import { supabase } from '../lib/supabase';
+import { ArrowLeft } from 'lucide-react';
 
 function Settings() {
   const navigate = useNavigate();
   const [darkMode, setDarkMode] = useState(true);
+  const [displayName, setDisplayName] = useState<string>('Loading...');
+
+  useEffect(() => {
+    const loadProfile = async () => {
+      const {
+        data: { user },
+      } = await supabase.auth.getUser();
+
+      if (user) {
+        // Prefer display_name, fallback to email prefix
+        const name =
+          (user.user_metadata && user.user_metadata.display_name) ||
+          (user.email ? user.email.split('@')[0] : 'User');
+
+        setDisplayName(name);
+      }
+    };
+
+    loadProfile();
+  }, []);
+
+  const containerClasses = darkMode
+  ? 'min-h-screen bg-black text-white p-8'
+  : 'min-h-screen bg-white text-black p-8';
+
+const cardClasses = darkMode
+  ? 'bg-zinc-900 p-6 rounded-xl'
+  : 'bg-zinc-100 p-6 rounded-xl';
+
+const secondaryTextClasses = darkMode ? 'text-gray-400' : 'text-gray-600';
+
+const themeButtonClasses = darkMode
+  ? 'bg-zinc-800 px-4 py-2 rounded-lg hover:bg-zinc-700 transition-colors'
+  : 'bg-zinc-200 px-4 py-2 rounded-lg hover:bg-zinc-300 transition-colors';
 
   const handleSignOut = async () => {
     try {
@@ -17,24 +52,37 @@ function Settings() {
   };
 
   const toggleTheme = () => {
-    setDarkMode(!darkMode);
-    // You can implement theme switching logic here
-    document.documentElement.classList.toggle('dark');
+    setDarkMode((prev) => !prev);
   };
 
   return (
-    <div className="min-h-screen bg-black text-white p-8">
-      <div className="max-w-4xl mx-auto">
-        <h1 className="text-4xl font-bold mb-12">Settings</h1>
+    <div className={containerClasses}>
+
+    {/* Top Bar with Back + Heading */}
+    <div className="flex items-center justify-center relative mb-8">
+      {/* Back Button */}
+      <button
+        onClick={() => navigate('/dashboard')}
+        className="absolute left-0 flex items-center gap-2 text-gray-300 hover:text-white transition-colors"
+      >
+        <ArrowLeft className="w-5 h-5" />
+        Back
+      </button>
+  
+      {/* Center Heading */}
+      <h1 className="text-2xl font-semibold">Settings</h1>
+    </div>
+    
+        <div className="max-w-4xl mx-auto">
 
         <div className="space-y-6">
           {/* Profile Section */}
-          <div className="bg-zinc-900 p-6 rounded-xl">
+          <div className={cardClasses}>
             <div className="flex items-center gap-4 cursor-pointer" onClick={() => navigate('/profile')}>
               <User className="w-6 h-6" />
               <div>
                 <h2 className="text-xl font-semibold">Profile Settings</h2>
-                <p className="text-gray-400">Manage your profile information and preferences</p>
+                <p className={secondaryTextClasses}>{displayName}</p>
               </div>
             </div>
           </div>
@@ -51,7 +99,7 @@ function Settings() {
               </div>
               <button
                 onClick={toggleTheme}
-                className="bg-zinc-800 px-4 py-2 rounded-lg hover:bg-zinc-700 transition-colors"
+                className={themeButtonClasses}
               >
                 {darkMode ? 'Switch to Light' : 'Switch to Dark'}
               </button>
@@ -81,7 +129,9 @@ function Settings() {
               </div>
               <button
                 onClick={handleSignOut}
-                className="bg-red-500 px-4 py-2 rounded-lg hover:bg-red-600 transition-colors"
+                className={darkMode
+                  ? 'bg-red-500 px-4 py-2 rounded-lg hover:bg-red-600 transition-colors text-white'
+                  : 'bg-red-500 px-4 py-2 rounded-lg hover:bg-red-600 transition-colors text-white'}
               >
                 Sign Out
               </button>
